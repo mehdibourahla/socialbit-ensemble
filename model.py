@@ -185,6 +185,7 @@ class MasterModel(nn.Module):
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = (TP + TN) / (TP + TN + FP + FN)
+        test_loss /= len(test_loader)
 
         print(f"Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
         print(
