@@ -49,8 +49,8 @@ class MasterModel(nn.Module):
         )
         self.aggregation_layer = nn.Linear(num_experts * num_classes, num_classes)
         self.criterion = nn.BCEWithLogitsLoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
-        self.early_stopping = EarlyStopping(patience=5, delta=0)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        self.early_stopping = EarlyStopping(patience=10, delta=0)
 
     def forward(self, x, expert_idx):
         shared_features = self.shared_extractor(x)

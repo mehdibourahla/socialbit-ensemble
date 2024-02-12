@@ -127,7 +127,9 @@ def main(args):
 
     # Plot the training and validation loss and accuracy
     print("Plotting the training and validation loss and accuracy...")
-    plot_training_curves(train_losses, val_losses, train_accuracies, val_accuracies)
+    plot_training_curves(
+        train_losses, val_losses, train_accuracies, val_accuracies, args.output_dir
+    )
 
 
 def initialize_args(parser):
