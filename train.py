@@ -16,7 +16,7 @@ def plot_training_curves(
     val_accuracies,
     output_dir,
 ):
-    output_path = os.path.join(output_dir, "test_results.txt")
+    output_path = os.path.join(output_dir, "training_curves.png")
     epochs = range(1, len(train_losses) + 1)
 
     plt.figure(figsize=(12, 4))
