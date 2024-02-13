@@ -42,7 +42,7 @@ class ExpertModel(nn.Module):
 
 
 class MasterModel(nn.Module):
-    def __init__(self, num_experts, num_classes=2):
+    def __init__(self, num_experts, class_weights_tensor, num_classes=2):
         super(MasterModel, self).__init__()
         self.num_experts = num_experts
         self.num_classes = num_classes
@@ -52,7 +52,7 @@ class MasterModel(nn.Module):
         )
         self.aggregation_layer = nn.Linear(num_experts * num_classes, num_classes)
 
-        self.criterion = nn.BCEWithLogitsLoss()
+        self.criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         self.early_stopping = EarlyStopping(patience=10, delta=0)
 

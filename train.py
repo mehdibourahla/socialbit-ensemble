@@ -1,12 +1,14 @@
 import os
 import argparse
 from data_loader import YAMNetFeaturesDatasetEAR
+from sklearn.utils.class_weight import compute_class_weight
 from model import MasterModel
 import torch
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import pandas as pd
 import logging
+import numpy as np
 
 
 def plot_training_curves(
@@ -84,25 +86,54 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
     setup_logging(args.output_dir)
 
+    i_fold = args.i_fold
+    j_subfold = args.j_subfold
+    current_output_dir = os.path.join(
+        args.output_dir, f"fold_{i_fold + 1}", f"subfold_{j_subfold + 1}"
+    )
+    os.makedirs(current_output_dir, exist_ok=True)
+
     # Load Training, Validation and Test datasets
     train_data, val_data, test_data = load_csv_files(args.data_dir)
+    data = pd.concat([train_data, val_data, test_data])
 
-    print(train_data.head())
+    num_folds = 5
+    fold_size = len(data) // num_folds
+    folds = []
+    for i in range(num_folds):
+        folds.append(data[i * fold_size : (i + 1) * fold_size])
+
+    test_fold = folds[i_fold]
+    validation_fold = folds[j_subfold]
+    training_fold = pd.concat(
+        [folds[i] for i in range(num_folds) if i != i_fold and i != j_subfold]
+    )
+
+    class_weights = compute_class_weight(
+        "balanced",
+        classes=np.unique(training_fold["is_social"]),
+        y=training_fold["is_social"],
+    )
+
+    # Handle class imbalance in the training set
 
     # Generate Data Loaders for Training, Validation and Test datasets
     train_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(train_data), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(training_fold), batch_size=32, shuffle=True
     )
     val_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(val_data), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(validation_fold), batch_size=32, shuffle=True
     )
     test_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(test_data), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(test_fold), batch_size=32, shuffle=True
     )
 
     # Configure the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MasterModel(num_experts=2, num_classes=2).to(device)
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
+    model = MasterModel(
+        num_experts=2, class_weights_tensor=class_weights_tensor, num_classes=2
+    ).to(device)
 
     # Train the model
     train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
@@ -110,7 +141,7 @@ def main(args):
     )
 
     # Save the model
-    torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pth"))
+    torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
 
     # Evaluate the model on the test set
     test_loss, test_accuracy, sensitivity, specificity = model.evaluate_model(
@@ -119,7 +150,7 @@ def main(args):
 
     # Save the test results
     print("Saving the test results...")
-    with open(os.path.join(args.output_dir, "test_results.txt"), "w") as f:
+    with open(os.path.join(current_output_dir, "test_results.txt"), "w") as f:
         f.write(f"Test Loss: {test_loss}\n")
         f.write(f"Test Accuracy: {test_accuracy}\n")
         f.write(f"Sensitivity: {sensitivity}\n")
@@ -128,7 +159,7 @@ def main(args):
     # Plot the training and validation loss and accuracy
     print("Plotting the training and validation loss and accuracy...")
     plot_training_curves(
-        train_losses, val_losses, train_accuracies, val_accuracies, args.output_dir
+        train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
 
 
@@ -142,6 +173,9 @@ def initialize_args(parser):
     parser.add_argument(
         "--output_dir", required=True, help="Path to Output the results"
     )
+
+    parser.add_argument("i_fold", type=int, help="Fold number")
+    parser.add_argument("j_subfold", type=int, help="Subfold number")
 
 
 if __name__ == "__main__":
