@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import logging
 from early_stopping import EarlyStopping
+import numpy as np
 
 
 class SharedFeatureExtractor(nn.Module):
@@ -43,36 +44,31 @@ class ExpertModel(nn.Module):
 class MasterModel(nn.Module):
     def __init__(self, num_experts, num_classes=2):
         super(MasterModel, self).__init__()
-
+        self.num_experts = num_experts
+        self.num_classes = num_classes
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
             [ExpertModel(num_classes) for _ in range(num_experts)]
         )
-        self.aggregation_layer = nn.Linear(19458, num_classes)
+        self.aggregation_layer = nn.Linear(num_experts * num_classes, num_classes)
 
         self.criterion = nn.BCEWithLogitsLoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-6)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         self.early_stopping = EarlyStopping(patience=10, delta=0)
 
     def forward(self, x, expert_idx):
         shared_features, intermediate1, intermediate2 = self.shared_extractor(x)
-        outputs = []
+        batch_size = x.size(0)
+        outputs = torch.zeros(
+            batch_size, self.num_experts * self.num_classes, device=x.device
+        )
         for i, idx in enumerate(expert_idx):
             if isinstance(idx, torch.Tensor):
                 idx = idx.item()
             expert_output = self.experts[idx](shared_features[i].unsqueeze(0))
-            intermediate1_flattened = intermediate1[i].unsqueeze(0).flatten(start_dim=1)
-            intermediate2_flattened = intermediate2[i].unsqueeze(0).flatten(start_dim=1)
-            combined_output = torch.cat(
-                (
-                    expert_output,
-                    intermediate1_flattened,
-                    intermediate2_flattened,
-                ),
-                dim=1,
+            outputs[i, idx * self.num_classes : (idx + 1) * self.num_classes] = (
+                expert_output.squeeze(0)
             )
-            outputs.append(combined_output)
-        outputs = torch.cat(outputs, dim=0)
         aggregated_output = self.aggregation_layer(outputs)
         return aggregated_output
 
