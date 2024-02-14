@@ -3,6 +3,7 @@ import argparse
 from data_loader import YAMNetFeaturesDatasetEAR
 from sklearn.utils.class_weight import compute_class_weight
 from model import MasterModel
+from baseline import BiLSTMModel
 import torch
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
@@ -131,12 +132,17 @@ def main(args):
     # Configure the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
-    model = MasterModel(
-        num_experts=2,
-        class_weights_tensor=class_weights_tensor,
-        num_classes=2,
-        skip_connection=args.skip_connection,
-    ).to(device)
+    if args.baseline:
+        model = BiLSTMModel(
+            class_weights_tensor=class_weights_tensor,
+        ).to(device)
+    else:
+        model = MasterModel(
+            num_experts=2,
+            class_weights_tensor=class_weights_tensor,
+            num_classes=2,
+            skip_connection=args.skip_connection,
+        ).to(device)
 
     # Train the model
     train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
@@ -182,6 +188,7 @@ def initialize_args(parser):
     parser.add_argument(
         "--skip_connection", action="store_true", help="Use skip connection"
     )
+    parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
 
 
 if __name__ == "__main__":
