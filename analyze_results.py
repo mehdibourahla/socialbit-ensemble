@@ -35,20 +35,24 @@ def analyze_test_results(base_output_dir, num_folds=5, num_subfolds=5):
 
     # Calculate average metrics
     avg_test_loss = df["Test Loss"].mean()
+    std_test_loss = df["Test Loss"].std()
     avg_test_accuracy = df["Test Accuracy"].mean()
+    std_test_accuracy = df["Test Accuracy"].std()
     avg_sensitivity = df["Sensitivity"].mean()
+    std_sensitivity = df["Sensitivity"].std()
     avg_specificity = df["Specificity"].mean()
+    std_specificity = df["Specificity"].std()
 
-    print("Average Test Loss:", avg_test_loss)
-    print("Average Test Accuracy:", avg_test_accuracy)
-    print("Average Sensitivity:", avg_sensitivity)
-    print("Average Specificity:", avg_specificity)
+    print("Average Test Loss:", avg_test_loss, "Std Dev:", std_test_loss)
+    print("Average Test Accuracy:", avg_test_accuracy, "Std Dev:", std_test_accuracy)
+    print("Average Sensitivity:", avg_sensitivity, "Std Dev:", std_sensitivity)
+    print("Average Specificity:", avg_specificity, "Std Dev:", std_specificity)
 
     with open(os.path.join(base_output_dir, "avg_test_results.txt"), "w") as f:
-        f.write(f"Test Loss: {avg_test_loss}\n")
-        f.write(f"Test Accuracy: {avg_test_accuracy}\n")
-        f.write(f"Sensitivity: {avg_sensitivity}\n")
-        f.write(f"Specificity: {avg_specificity}\n")
+        f.write(f"Test Loss: {avg_test_loss} ± {std_test_loss}\n")
+        f.write(f"Test Accuracy: {avg_test_accuracy} ± {std_test_accuracy}\n")
+        f.write(f"Sensitivity: {avg_sensitivity} ± {std_sensitivity}\n")
+        f.write(f"Specificity: {avg_specificity} ± {std_specificity}\n")
 
     # Optionally, plot the metrics
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
