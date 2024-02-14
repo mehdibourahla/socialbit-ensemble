@@ -132,7 +132,10 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     model = MasterModel(
-        num_experts=2, class_weights_tensor=class_weights_tensor, num_classes=2
+        num_experts=2,
+        class_weights_tensor=class_weights_tensor,
+        num_classes=2,
+        skip_connection=args.skip_connection,
     ).to(device)
 
     # Train the model
@@ -176,6 +179,9 @@ def initialize_args(parser):
 
     parser.add_argument("--i_fold", type=int, help="Fold number")
     parser.add_argument("--j_subfold", type=int, help="Subfold number")
+    parser.add_argument(
+        "--skip_connection", action="store_true", help="Use skip connection"
+    )
 
 
 if __name__ == "__main__":

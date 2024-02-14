@@ -42,35 +42,54 @@ class ExpertModel(nn.Module):
 
 
 class MasterModel(nn.Module):
-    def __init__(self, num_experts, class_weights_tensor, num_classes=2):
+    def __init__(
+        self, num_experts, class_weights_tensor, num_classes=2, skip_connection=True
+    ):
         super(MasterModel, self).__init__()
         self.num_experts = num_experts
         self.num_classes = num_classes
+        self.skip_connection = skip_connection
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
             [ExpertModel(num_classes) for _ in range(num_experts)]
         )
         self.aggregation_layer = nn.Linear(num_experts * num_classes, num_classes)
-
+        self.final_classification_layer = nn.Linear(
+            19458, num_classes
+        )  # This should be calculated based on the actual sizes
         self.criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         self.early_stopping = EarlyStopping(patience=10, delta=0)
 
     def forward(self, x, expert_idx):
         shared_features, intermediate1, intermediate2 = self.shared_extractor(x)
+
+        # Get the aggregated output from the experts
         batch_size = x.size(0)
-        outputs = torch.zeros(
+        expert_outputs = torch.zeros(
             batch_size, self.num_experts * self.num_classes, device=x.device
         )
         for i, idx in enumerate(expert_idx):
             if isinstance(idx, torch.Tensor):
                 idx = idx.item()
             expert_output = self.experts[idx](shared_features[i].unsqueeze(0))
-            outputs[i, idx * self.num_classes : (idx + 1) * self.num_classes] = (
+            expert_outputs[i, idx * self.num_classes : (idx + 1) * self.num_classes] = (
                 expert_output.squeeze(0)
             )
-        aggregated_output = self.aggregation_layer(outputs)
-        return aggregated_output
+
+        aggregated_output = self.aggregation_layer(expert_outputs)
+
+        if self.skip_connection:
+            intermediate1_flat = intermediate1.view(x.size(0), -1)
+            intermediate2_flat = intermediate2.view(x.size(0), -1)
+            combined_features = torch.cat(
+                [aggregated_output, intermediate1_flat, intermediate2_flat], dim=1
+            )
+            final_output = self.final_classification_layer(combined_features)
+        else:
+            final_output = aggregated_output
+
+        return final_output
 
     def train_model(
         self,
