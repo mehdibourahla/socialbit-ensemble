@@ -218,6 +218,12 @@ def initialize_args(parser):
         "--output_dir", required=True, help="Path to Output the results"
     )
 
+    parser.add_argument(
+        "--ext_test_data_dir",
+        required=True,
+        help="Path to the directory containing external test dataset",
+    )
+
     parser.add_argument("--i_fold", type=int, help="Fold number")
     parser.add_argument("--j_subfold", type=int, help="Subfold number")
     parser.add_argument(
