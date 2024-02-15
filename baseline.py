@@ -6,7 +6,7 @@ from early_stopping import EarlyStopping
 class BiLSTMModel(nn.Module):
     def __init__(
         self,
-        class_weights_tensor,
+        class_weights_tensor=None,
         input_size=1024,
         hidden_size=150,
         num_layers=2,
@@ -32,10 +32,7 @@ class BiLSTMModel(nn.Module):
 
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
-
-        self.criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
-        self.early_stopping = EarlyStopping(patience=10, delta=0)
+        self.class_weights_tensor = class_weights_tensor
 
     def forward(self, x):
         # Initialize hidden state and cell state
@@ -61,6 +58,10 @@ class BiLSTMModel(nn.Module):
         output_dir,
         epochs=10,
     ):
+        criterion = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        early_stopping = EarlyStopping(patience=10, delta=0)
+
         train_losses = []
         val_losses = []
         train_accuracies = []
@@ -76,13 +77,13 @@ class BiLSTMModel(nn.Module):
                 inputs_x, labels_x, _ = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
                 # Transpose between dim 1 and 2 because LSTM expects the sequence length to be the second dimension
                 inputs_x = inputs_x.transpose(1, 2)
                 outputs_x = self(inputs_x)
-                loss_x = self.criterion(outputs_x, labels_x.float())
+                loss_x = criterion(outputs_x, labels_x.float())
                 loss_x.backward()
-                self.optimizer.step()
+                optimizer.step()
 
                 total_loss += loss_x.item()
                 probs = torch.sigmoid(outputs_x)
@@ -107,7 +108,7 @@ class BiLSTMModel(nn.Module):
                     inputs_v, labels_v = inputs_v.to(device), labels_v.to(device)
                     inputs_v = inputs_v.transpose(1, 2)
                     outputs_v = self(inputs_v)
-                    loss_v = self.criterion(outputs_v, labels_v.float())
+                    loss_v = criterion(outputs_v, labels_v.float())
 
                     val_loss += loss_v.item()
                     probs_v = torch.sigmoid(outputs_v)
@@ -128,13 +129,13 @@ class BiLSTMModel(nn.Module):
             val_accuracies.append(val_accuracy)
 
             # Early stopping
-            if self.early_stopping.early_stop(val_loss):
+            if early_stopping.early_stop(val_loss):
                 print(
-                    f"Validation loss did not decrease for {self.early_stopping.patience} epochs. Training stopped."
+                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
                 )
 
                 # Save the model checkpoint
-                self.early_stopping.save_checkpoint(
+                early_stopping.save_checkpoint(
                     val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
                 )
                 break
@@ -143,6 +144,7 @@ class BiLSTMModel(nn.Module):
     def evaluate_model(self, test_loader, device):
         self.eval()  # Set the model to evaluation mode
         test_loss = 0
+        criterion = nn.BCEWithLogitsLoss()
         TP = 0  # True Positives
         TN = 0  # True Negatives
         FP = 0  # False Positives
@@ -154,7 +156,7 @@ class BiLSTMModel(nn.Module):
                 inputs, labels = inputs.to(device), labels.to(device)
 
                 outputs = self(inputs.transpose(1, 2))
-                loss = self.criterion(outputs, labels.float())
+                loss = criterion(outputs, labels.float())
 
                 test_loss += loss.item()
                 probs = torch.sigmoid(outputs)

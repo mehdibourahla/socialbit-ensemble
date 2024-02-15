@@ -43,12 +43,17 @@ class ExpertModel(nn.Module):
 
 class MasterModel(nn.Module):
     def __init__(
-        self, num_experts, class_weights_tensor, num_classes=2, skip_connection=True
+        self,
+        num_experts=2,
+        class_weights_tensor=None,
+        num_classes=2,
+        skip_connection=True,
     ):
         super(MasterModel, self).__init__()
         self.num_experts = num_experts
         self.num_classes = num_classes
         self.skip_connection = skip_connection
+        self.class_weights_tensor = class_weights_tensor
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
             [ExpertModel(num_classes) for _ in range(num_experts)]
@@ -57,9 +62,6 @@ class MasterModel(nn.Module):
         self.final_classification_layer = nn.Linear(
             19458, num_classes
         )  # This should be calculated based on the actual sizes
-        self.criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
-        self.early_stopping = EarlyStopping(patience=10, delta=0)
 
     def forward(self, x, expert_idx):
         shared_features, intermediate1, intermediate2 = self.shared_extractor(x)
@@ -99,6 +101,9 @@ class MasterModel(nn.Module):
         output_dir,
         epochs=10,
     ):
+        criterion = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        early_stopping = EarlyStopping(patience=10, delta=0)
         train_losses = []
         val_losses = []
         train_accuracies = []
@@ -114,11 +119,11 @@ class MasterModel(nn.Module):
                 inputs_x, labels_x, domains_x = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
                 outputs_x = self(inputs_x, domains_x)
-                loss_x = self.criterion(outputs_x, labels_x.float())
+                loss_x = criterion(outputs_x, labels_x.float())
                 loss_x.backward()
-                self.optimizer.step()
+                optimizer.step()
 
                 total_loss += loss_x.item()
                 probs = torch.sigmoid(outputs_x)
@@ -146,7 +151,7 @@ class MasterModel(nn.Module):
                     inputs_v, labels_v = inputs_v.to(device), labels_v.to(device)
 
                     outputs_v = self(inputs_v, domains_v)
-                    loss_v = self.criterion(outputs_v, labels_v.float())
+                    loss_v = criterion(outputs_v, labels_v.float())
 
                     val_loss += loss_v.item()
                     probs_v = torch.sigmoid(outputs_v)
@@ -169,15 +174,15 @@ class MasterModel(nn.Module):
             val_accuracies.append(val_accuracy)
 
             # Early stopping
-            if self.early_stopping.early_stop(val_loss):
+            if early_stopping.early_stop(val_loss):
                 print(
-                    f"Validation loss did not decrease for {self.early_stopping.patience} epochs. Training stopped."
+                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
                 )
                 logging.info(
-                    f"Validation loss did not decrease for {self.early_stopping.patience} epochs. Training stopped."
+                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
                 )
                 # Save the model checkpoint
-                self.early_stopping.save_checkpoint(
+                early_stopping.save_checkpoint(
                     val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
                 )
                 break
@@ -185,6 +190,7 @@ class MasterModel(nn.Module):
 
     def evaluate_model(self, test_loader, device):
         self.eval()  # Set the model to evaluation mode
+        criterion = nn.BCEWithLogitsLoss()
         test_loss = 0
         TP = 0  # True Positives
         TN = 0  # True Negatives
@@ -197,7 +203,7 @@ class MasterModel(nn.Module):
                 inputs, labels = inputs.to(device), labels.to(device)
 
                 outputs = self(inputs, domains)
-                loss = self.criterion(outputs, labels.float())
+                loss = criterion(outputs, labels.float())
 
                 test_loss += loss.item()
                 probs = torch.sigmoid(outputs)
