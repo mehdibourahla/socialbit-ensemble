@@ -8,7 +8,7 @@ import os
 
 
 class YAMNetFeaturesDatasetDavid(Dataset):
-    def __init__(self, dataframe: pd.DataFrame, data_dir: str):
+    def __init__(self, dataframe: pd.DataFrame, data_dir: str, domain: int = None):
         """
         Initializes the dataset.
 
@@ -16,6 +16,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         """
         self.dataframe = dataframe
         self.data_dir = data_dir
+        self.domain = domain
         # Ensure the DataFrame index is a list for easy access
         self.filenames = dataframe.filename.tolist()
 
@@ -27,7 +28,11 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         fpath = os.path.join(self.data_dir, self.filenames[idx])
         # Retrieve the label and domain directly from the DataFrame
         label = self.dataframe.iloc[idx]["social_interaction"]
-        domain = self.dataframe.iloc[idx]["microphone"] - 1
+        domain = (
+            self.domain
+            if self.domain is not None
+            else self.dataframe.iloc[idx]["microphone"] - 1
+        )
 
         try:
             # Load the feature data from the file
@@ -55,7 +60,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
 
         label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        return data_tensor, label_one_hot, domain_tensor
+        return self.filenames[idx], data_tensor, label_one_hot, domain_tensor
 
 
 class YAMNetFeaturesDatasetEAR(Dataset):
@@ -105,4 +110,4 @@ class YAMNetFeaturesDatasetEAR(Dataset):
 
         label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        return data_tensor, label_one_hot, domain_tensor
+        return fpath, data_tensor, label_one_hot, domain_tensor

@@ -1,9 +1,8 @@
 import os
 import argparse
-from data_loader import YAMNetFeaturesDatasetEAR
+from data_loader import YAMNetFeaturesDatasetEAR, YAMNetFeaturesDatasetDavid
 from sklearn.utils.class_weight import compute_class_weight
-from model import MasterModel
-from baseline import BiLSTMModel
+from models import MasterModel, BiLSTMModel
 import torch
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
@@ -83,42 +82,45 @@ def load_csv_files(directory_path):
     return dataframes.get("train"), dataframes.get("val"), dataframes.get("test")
 
 
-def main(args):
-    os.makedirs(args.output_dir, exist_ok=True)
-    setup_logging(args.output_dir)
+def setup_directories(output_dir):
+    os.makedirs(output_dir, exist_ok=True)
 
-    i_fold = args.i_fold
-    j_subfold = args.j_subfold
-    current_output_dir = os.path.join(
-        args.output_dir, f"fold_{i_fold + 1}", f"subfold_{j_subfold + 1}"
-    )
-    os.makedirs(current_output_dir, exist_ok=True)
 
-    # Load Training, Validation and Test datasets
-    train_data, val_data, test_data = load_csv_files(args.data_dir)
+def load_and_prepare_data(data_dir, i_fold, j_subfold, num_folds=5):
+    train_data, val_data, test_data = load_csv_files(data_dir)
     data = pd.concat([train_data, val_data, test_data])
-
-    num_folds = 5
     fold_size = len(data) // num_folds
-    folds = []
-    for i in range(num_folds):
-        folds.append(data[i * fold_size : (i + 1) * fold_size])
-
+    folds = [data[i * fold_size : (i + 1) * fold_size] for i in range(num_folds)]
     test_fold = folds[i_fold]
     validation_fold = folds[j_subfold]
     training_fold = pd.concat(
-        [folds[i] for i in range(num_folds) if i != i_fold and i != j_subfold]
+        folds[i] for i in range(num_folds) if i not in [i_fold, j_subfold]
     )
+    return training_fold, validation_fold, test_fold
 
-    class_weights = compute_class_weight(
+
+def compute_weights(training_fold):
+    return compute_class_weight(
         "balanced",
         classes=np.unique(training_fold["is_social"]),
         y=training_fold["is_social"],
     )
 
-    # Handle class imbalance in the training set
 
-    # Generate Data Loaders for Training, Validation and Test datasets
+def initialize_model(args, class_weights_tensor):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.baseline:
+        model = BiLSTMModel(class_weights_tensor=class_weights_tensor).to(device)
+    else:
+        model = MasterModel(
+            num_experts=2,
+            class_weights_tensor=class_weights_tensor,
+            skip_connection=args.skip_connection,
+        ).to(device)
+    return model, device
+
+
+def get_data_loaders(training_fold, validation_fold, test_fold):
     train_gen = DataLoader(
         YAMNetFeaturesDatasetEAR(training_fold), batch_size=32, shuffle=True
     )
@@ -128,47 +130,80 @@ def main(args):
     test_gen = DataLoader(
         YAMNetFeaturesDatasetEAR(test_fold), batch_size=32, shuffle=True
     )
+    return train_gen, val_gen, test_gen
 
-    # Configure the model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
-    if args.baseline:
-        model = BiLSTMModel(
-            class_weights_tensor=class_weights_tensor,
-        ).to(device)
-    else:
-        model = MasterModel(
-            num_experts=2,
-            class_weights_tensor=class_weights_tensor,
-            num_classes=2,
-            skip_connection=args.skip_connection,
-        ).to(device)
 
-    # Train the model
+def train_and_evaluate_model(
+    model, train_gen, val_gen, test_gen, device, output_dir, current_output_dir
+):
     train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
-        train_gen, val_gen, device, args.output_dir, epochs=100
+        train_gen, val_gen, device, output_dir, epochs=100
     )
-
-    # Save the model
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
-
-    # Evaluate the model on the test set
-    test_loss, test_accuracy, sensitivity, specificity = model.evaluate_model(
-        test_gen, device
+    evaluate_and_save_results(
+        model,
+        test_gen,
+        device,
+        os.path.join(current_output_dir, "test_results.txt"),
+        "test_predictions.csv",
     )
-
-    # Save the test results
-    print("Saving the test results...")
-    with open(os.path.join(current_output_dir, "test_results.txt"), "w") as f:
-        f.write(f"Test Loss: {test_loss}\n")
-        f.write(f"Test Accuracy: {test_accuracy}\n")
-        f.write(f"Sensitivity: {sensitivity}\n")
-        f.write(f"Specificity: {specificity}\n")
-
-    # Plot the training and validation loss and accuracy
-    print("Plotting the training and validation loss and accuracy...")
     plot_training_curves(
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
+    )
+
+
+def evaluate_and_save_results(
+    model, data_loader, device, results_file_path, predictions_file_name
+):
+    test_loss, test_accuracy, sensitivity, specificity, predictions = (
+        model.evaluate_model(data_loader, device)
+    )
+    with open(results_file_path, "w") as f:
+        f.write(
+            f"Test Loss: {test_loss}\nTest Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
+        )
+    pd.DataFrame(predictions).to_csv(
+        os.path.join(os.path.dirname(results_file_path), predictions_file_name),
+        index=False,
+    )
+
+
+def main(args):
+    setup_directories(args.output_dir)
+
+    current_output_dir = os.path.join(
+        args.output_dir, f"fold_{args.i_fold + 1}", f"subfold_{args.j_subfold + 1}"
+    )
+    setup_directories(current_output_dir)
+    setup_logging(current_output_dir)
+
+    training_fold, validation_fold, test_fold = load_and_prepare_data(
+        args.data_dir, args.i_fold, args.j_subfold
+    )
+    class_weights = compute_weights(training_fold)
+    model, device = initialize_model(
+        args, torch.tensor(class_weights, dtype=torch.float).to(device)
+    )
+    train_gen, val_gen, test_gen = get_data_loaders(
+        training_fold, validation_fold, test_fold
+    )
+    train_and_evaluate_model(
+        model, train_gen, val_gen, test_gen, device, args.output_dir, current_output_dir
+    )
+
+    # Evaluate on external test data
+    ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
+    ext_test_gen = DataLoader(
+        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, domain=0),
+        batch_size=32,
+        shuffle=False,
+    )
+    evaluate_and_save_results(
+        model,
+        ext_test_gen,
+        device,
+        os.path.join(current_output_dir, "ext_test_results.txt"),
+        "ext_test_predictions.csv",
     )
 
 
