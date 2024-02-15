@@ -107,8 +107,9 @@ def compute_weights(training_fold):
     )
 
 
-def initialize_model(args, class_weights_tensor):
+def initialize_model(args, class_weights):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     if args.baseline:
         model = BiLSTMModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
@@ -181,9 +182,7 @@ def main(args):
         args.data_dir, args.i_fold, args.j_subfold
     )
     class_weights = compute_weights(training_fold)
-    model, device = initialize_model(
-        args, torch.tensor(class_weights, dtype=torch.float).to(device)
-    )
+    model, device = initialize_model(args, class_weights)
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
