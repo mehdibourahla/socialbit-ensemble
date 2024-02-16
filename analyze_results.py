@@ -1,10 +1,11 @@
 import os
 import pandas as pd
-import matplotlib.pyplot as plt
 import argparse
 
 
-def analyze_test_results(base_output_dir, num_folds=5, num_subfolds=5):
+def analyze_test_results(
+    base_output_dir, results_filename, num_folds=5, num_subfolds=5
+):
     results = []
 
     # Iterate over each fold and subfold
@@ -15,7 +16,7 @@ def analyze_test_results(base_output_dir, num_folds=5, num_subfolds=5):
                 base_output_dir,
                 f"fold_{i_fold + 1}",
                 f"subfold_{j_subfold + 1}",
-                "test_results.txt",
+                f"{results_filename}.txt",
             )
 
             # Read the results if the file exists
@@ -48,34 +49,19 @@ def analyze_test_results(base_output_dir, num_folds=5, num_subfolds=5):
     print("Average Sensitivity:", avg_sensitivity, "Std Dev:", std_sensitivity)
     print("Average Specificity:", avg_specificity, "Std Dev:", std_specificity)
 
-    with open(os.path.join(base_output_dir, "avg_test_results.txt"), "w") as f:
+    with open(os.path.join(base_output_dir, f"avg_{results_filename}.txt"), "w") as f:
         f.write(f"Test Loss: {avg_test_loss} ± {std_test_loss}\n")
         f.write(f"Test Accuracy: {avg_test_accuracy} ± {std_test_accuracy}\n")
         f.write(f"Sensitivity: {avg_sensitivity} ± {std_sensitivity}\n")
         f.write(f"Specificity: {avg_specificity} ± {std_specificity}\n")
 
-    # Optionally, plot the metrics
-    fig, axs = plt.subplots(2, 2, figsize=(12, 10))
-    axs[0, 0].plot(df["fold"], df["Test Loss"], "o-")
-    axs[0, 0].set_title("Test Loss by Fold")
-    axs[0, 1].plot(df["fold"], df["Test Accuracy"], "o-")
-    axs[0, 1].set_title("Test Accuracy by Fold")
-    axs[1, 0].plot(df["fold"], df["Sensitivity"], "o-")
-    axs[1, 0].set_title("Sensitivity by Fold")
-    axs[1, 1].plot(df["fold"], df["Specificity"], "o-")
-    axs[1, 1].set_title("Specificity by Fold")
-
-    for ax in axs.flat:
-        ax.set(xlabel="Fold", ylabel="Metric Value")
-        ax.label_outer()
-
-    plt.tight_layout()
-    output_path = os.path.join(base_output_dir, "results.png")
-    plt.savefig(f"{output_path}")
-
 
 def find_and_save_best_model(
-    base_output_dir, num_folds=5, num_subfolds=5, metric="Test Accuracy"
+    base_output_dir,
+    results_filename,
+    num_folds=5,
+    num_subfolds=5,
+    metric="Test Accuracy",
 ):
     results = []
     best_metric_value = float("-inf") if metric != "Test Loss" else float("inf")
@@ -88,7 +74,7 @@ def find_and_save_best_model(
                 base_output_dir,
                 f"fold_{i_fold + 1}",
                 f"subfold_{j_subfold + 1}",
-                "test_results.txt",
+                f"{results_filename}.txt",
             )
 
             if os.path.exists(result_file):
@@ -130,14 +116,21 @@ def find_and_save_best_model(
         # Optionally, copy the best model to a common directory
         import shutil
 
-        destination_path = os.path.join(base_output_dir, "best_model.pth")
+        destination_path = os.path.join(
+            base_output_dir, f"{results_filename}_best_model.pth"
+        )
         shutil.copy(best_model_path, destination_path)
         print(f"Best model copied to: {destination_path}")
 
 
 def main(args):
-    analyze_test_results(args.output_dir)
-    find_and_save_best_model(args.output_dir, metric="Test Accuracy")
+    analyze_test_results(args.output_dir, "test_results")
+    find_and_save_best_model(args.output_dir, "test_results", metric="Test Accuracy")
+
+    analyze_test_results(args.output_dir, "ext_test_results")
+    find_and_save_best_model(
+        args.output_dir, "ext_test_results", metric="Test Accuracy"
+    )
 
 
 def initialize_args(parser):
