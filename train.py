@@ -168,6 +168,75 @@ def evaluate_and_save_results(
         index=False,
     )
 
+    return predictions
+
+
+def compute_save_results(predictions, results_filename):
+
+    true_labels = [p["true_label"] for p in predictions]
+    positive_predictions = [p["positive"] for p in predictions]
+    accuracy = sum(
+        [
+            1 if (p > 0.5 and t == 1) or (p <= 0.5 and t == 0) else 0
+            for p, t in zip(positive_predictions, true_labels)
+        ]
+    ) / len(true_labels)
+    sensitivity = sum(
+        [
+            1 if p > 0.5 and t == 1 else 0
+            for p, t in zip(positive_predictions, true_labels)
+        ]
+    ) / sum(true_labels)
+    specificity = sum(
+        [
+            1 if p <= 0.5 and t == 0 else 0
+            for p, t in zip(positive_predictions, true_labels)
+        ]
+    ) / (len(true_labels) - sum(true_labels))
+
+    with open(f"{results_filename}.txt", "w") as f:
+        f.write(
+            f"Test Accuracy: {accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
+        )
+
+
+def fuse_predictions_average(domain_0_predictions, domain_1_predictions):
+    fused_predictions = []
+    for d0_pred in domain_0_predictions:
+        matching_d1_pred = next(
+            filter(
+                lambda d: d["filename"] == d0_pred["filename"], domain_1_predictions
+            ),
+            None,
+        )
+        if matching_d1_pred:
+            averaged_prediction = {
+                "filename": d0_pred["filename"],
+                "positive": (d0_pred["positive"] + matching_d1_pred["positive"]) / 2,
+                "negative": (d0_pred["negative"] + matching_d1_pred["negative"]) / 2,
+            }
+            fused_predictions.append(averaged_prediction)
+    return fused_predictions
+
+
+def fuse_predictions_most_confident(domain_0_predictions, domain_1_predictions):
+    fused_predictions = []
+    for d0_pred in domain_0_predictions:
+        matching_d1_pred = next(
+            filter(
+                lambda d: d["filename"] == d0_pred["filename"], domain_1_predictions
+            ),
+            None,
+        )
+        if matching_d1_pred:
+            if max(d0_pred["positive"], d0_pred["negative"]) > max(
+                matching_d1_pred["positive"], matching_d1_pred["negative"]
+            ):
+                fused_predictions.append(d0_pred)
+            else:
+                fused_predictions.append(matching_d1_pred)
+    return fused_predictions
+
 
 def main(args):
     setup_directories(args.output_dir)
@@ -197,12 +266,42 @@ def main(args):
         batch_size=32,
         shuffle=False,
     )
-    evaluate_and_save_results(
+    domain_0_predictions = evaluate_and_save_results(
         model,
         ext_test_gen,
         device,
-        os.path.join(current_output_dir, "ext_test_results.txt"),
-        "ext_test_predictions.csv",
+        os.path.join(current_output_dir, "ext_test_results_domain_0.txt"),
+        "ext_test_predictions_domain_0.csv",
+    )
+
+    # Try with domain 1
+    ext_test_gen = DataLoader(
+        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, domain=1),
+        batch_size=32,
+        shuffle=False,
+    )
+    domain_1_predictions = evaluate_and_save_results(
+        model,
+        ext_test_gen,
+        device,
+        os.path.join(current_output_dir, "ext_test_results_domain_1.txt"),
+        "ext_test_predictions_domain_1.csv",
+    )
+
+    fused_predictions_average = fuse_predictions_average(
+        domain_0_predictions, domain_1_predictions
+    )
+    fused_predictions_confident = fuse_predictions_most_confident(
+        domain_0_predictions, domain_1_predictions
+    )
+
+    compute_save_results(
+        fused_predictions_average,
+        os.path.join(current_output_dir, "ext_test_results_fused_average"),
+    )
+    compute_save_results(
+        fused_predictions_confident,
+        os.path.join(current_output_dir, "ext_test_results_fused_confident"),
     )
 
 

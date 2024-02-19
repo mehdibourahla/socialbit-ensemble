@@ -153,8 +153,14 @@ class StandardModel(nn.Module):
                 test_loss += loss.item()
                 probs = torch.sigmoid(outputs)
                 for i in range(len(filename)):
+                    prediction = probs[i].cpu().numpy()
                     predictions.append(
-                        {"filename": filename[i], "prediction": probs[i].cpu().numpy()}
+                        {
+                            "filename": filename[i],
+                            "true_label": labels[i].cpu().numpy()[1],
+                            "positive": prediction[1],
+                            "negative": prediction[0],
+                        }
                     )
 
                 preds = (probs > 0.5).float()
