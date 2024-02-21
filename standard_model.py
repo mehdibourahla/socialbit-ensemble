@@ -136,9 +136,8 @@ class StandardModel(nn.Module):
                 )
                 loss_bce_x = bce_loss_fn(outputs_x, labels_x.float())
                 loss_cl_x = self.contrastive_loss(expert_outputs_x, expert_idx)
-
-                alpha = 1
-                beta = 0
+                alpha = 0.5
+                beta = 0.5
                 loss_x = alpha * loss_bce_x + beta * loss_cl_x
                 loss_x.backward()
                 optimizer.step()
@@ -178,8 +177,8 @@ class StandardModel(nn.Module):
                     )
                     loss_bce_v = bce_loss_fn(outputs_v, labels_v.float())
                     loss_cl_v = self.contrastive_loss(expert_outputs_v, expert_idx)
-                    alpha = 1
-                    beta = 0
+                    alpha = 0.5
+                    beta = 0.5
                     loss_v = alpha * loss_bce_v + beta * loss_cl_v
 
                     val_loss += loss_v.item()
@@ -245,8 +244,8 @@ class StandardModel(nn.Module):
                 )
                 loss_bce = bce_loss_fn(outputs, labels.float())
                 loss_cl = self.contrastive_loss(expert_outputs, expert_idx)
-                alpha = 1
-                beta = 0
+                alpha = 0.5
+                beta = 0.5
                 loss = alpha * loss_bce + beta * loss_cl
 
                 test_loss += loss.item()
