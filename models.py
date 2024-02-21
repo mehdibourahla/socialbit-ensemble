@@ -118,21 +118,20 @@ class MasterModel(StandardModel):
     def forward(self, x, expert_idx):
         shared_features, intermediate1, intermediate2 = self.shared_extractor(x)
 
-        # Get the aggregated output from the experts
-        batch_size = x.size(0)
+        # Create an empty tensor to store the output of each expert (batch_size, num_experts, num_classes)
         expert_outputs = torch.zeros(
-            batch_size, self.num_experts * self.num_classes, device=x.device
+            x.size(0), self.num_experts, self.num_classes, device=x.device
         )
+        # Get the aggregated output from the experts
         for i, idx in enumerate(expert_idx):
             if isinstance(idx, torch.Tensor):
                 idx = idx.item()
             expert_output = self.experts[idx](shared_features[i].unsqueeze(0))
-            expert_outputs[i, idx * self.num_classes : (idx + 1) * self.num_classes] = (
-                expert_output.squeeze(0)
-            )
+            expert_outputs[i, idx] = expert_output.squeeze(0)
 
-        aggregated_output = self.aggregation_layer(expert_outputs)
-
+        # Flatten the expert outputs to be aggregated
+        expert_outputs_flattened = expert_outputs.view(x.size(0), -1)
+        aggregated_output = self.aggregation_layer(expert_outputs_flattened)
         if self.skip_connection:
             intermediate1_flat = intermediate1.view(x.size(0), -1)
             intermediate2_flat = intermediate2.view(x.size(0), -1)
@@ -143,4 +142,4 @@ class MasterModel(StandardModel):
         else:
             final_output = aggregated_output
 
-        return final_output
+        return final_output, expert_outputs, expert_idx
