@@ -35,8 +35,6 @@ def analyze_test_results(
     df = pd.DataFrame(results)
 
     # Calculate average metrics
-    avg_test_loss = df["Test Loss"].mean()
-    std_test_loss = df["Test Loss"].std()
     avg_test_accuracy = df["Test Accuracy"].mean()
     std_test_accuracy = df["Test Accuracy"].std()
     avg_sensitivity = df["Sensitivity"].mean()
@@ -44,13 +42,11 @@ def analyze_test_results(
     avg_specificity = df["Specificity"].mean()
     std_specificity = df["Specificity"].std()
 
-    print("Average Test Loss:", avg_test_loss, "Std Dev:", std_test_loss)
     print("Average Test Accuracy:", avg_test_accuracy, "Std Dev:", std_test_accuracy)
     print("Average Sensitivity:", avg_sensitivity, "Std Dev:", std_sensitivity)
     print("Average Specificity:", avg_specificity, "Std Dev:", std_specificity)
 
     with open(os.path.join(base_output_dir, f"avg_{results_filename}.txt"), "w") as f:
-        f.write(f"Test Loss: {avg_test_loss} ± {std_test_loss}\n")
         f.write(f"Test Accuracy: {avg_test_accuracy} ± {std_test_accuracy}\n")
         f.write(f"Sensitivity: {avg_sensitivity} ± {std_sensitivity}\n")
         f.write(f"Specificity: {avg_specificity} ± {std_specificity}\n")
@@ -124,12 +120,14 @@ def find_and_save_best_model(
 
 
 def main(args):
-    analyze_test_results(args.output_dir, "test_results")
-    find_and_save_best_model(args.output_dir, "test_results", metric="Test Accuracy")
-
-    analyze_test_results(args.output_dir, "ext_test_results")
+    analyze_test_results(args.output_dir, "ext_test_results_fused_average")
     find_and_save_best_model(
-        args.output_dir, "ext_test_results", metric="Test Accuracy"
+        args.output_dir, "ext_test_results_fused_average", metric="Test Accuracy"
+    )
+
+    analyze_test_results(args.output_dir, "ext_test_results_fused_confident")
+    find_and_save_best_model(
+        args.output_dir, "ext_test_results_fused_confident", metric="Test Accuracy"
     )
 
 
