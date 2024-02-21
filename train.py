@@ -212,6 +212,7 @@ def fuse_predictions_average(domain_0_predictions, domain_1_predictions):
         if matching_d1_pred:
             averaged_prediction = {
                 "filename": d0_pred["filename"],
+                "true_label": d0_pred["true_label"],
                 "positive": (d0_pred["positive"] + matching_d1_pred["positive"]) / 2,
                 "negative": (d0_pred["negative"] + matching_d1_pred["negative"]) / 2,
             }
