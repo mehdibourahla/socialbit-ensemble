@@ -114,22 +114,38 @@ class MasterModel(StandardModel):
         self.final_classification_layer = (
             nn.Linear(19458, num_classes) if skip_connection else None
         )
+        self.expert_selector = nn.Linear(num_experts * num_classes, self.num_experts)
 
-    def forward(self, x, expert_idx):
+    def forward(self, x, expert_idx=None):
         shared_features, intermediate1, intermediate2 = self.shared_extractor(x)
-
-        # Create an empty tensor to store the output of each expert (batch_size, num_experts, num_classes)
         expert_outputs = torch.zeros(
             x.size(0), self.num_experts, self.num_classes, device=x.device
         )
-        # Get the aggregated output from the experts
-        for i, idx in enumerate(expert_idx):
-            if isinstance(idx, torch.Tensor):
-                idx = idx.item()
-            expert_output = self.experts[idx](shared_features[i].unsqueeze(0))
-            expert_outputs[i, idx] = expert_output.squeeze(0)
+        all_expert_outputs = [
+            self.experts[i](shared_features) for i in range(self.num_experts)
+        ]
+        all_expert_outputs = torch.stack(
+            all_expert_outputs, dim=1
+        )  # Shape: [batch_size, num_experts, num_classes]
 
-        # Flatten the expert outputs to be aggregated
+        expert_selection_logits = self.expert_selector(
+            all_expert_outputs.view(x.size(0), -1)
+        )
+        # Get the expert_idx with the highest confidence score
+        expert_selection_logits = expert_selection_logits.argmax(dim=1)
+        if expert_idx is not None:
+            for i, idx in enumerate(expert_idx):
+                if isinstance(idx, torch.Tensor):
+                    idx = idx.item()
+                expert_output = self.experts[idx](shared_features[i].unsqueeze(0))
+                expert_outputs[i, idx] = expert_output.squeeze(0)
+        else:
+            # Case for unknown expert_idx, such as in a test set
+            for i in range(x.size(0)):
+                best_expert_idx = expert_selection_logits[i].item()
+                expert_outputs[i, :] = all_expert_outputs[i, best_expert_idx, :]
+
+        # Continue with aggregation of expert outputs
         expert_outputs_flattened = expert_outputs.view(x.size(0), -1)
         aggregated_output = self.aggregation_layer(expert_outputs_flattened)
         if self.skip_connection:
@@ -142,4 +158,4 @@ class MasterModel(StandardModel):
         else:
             final_output = aggregated_output
 
-        return final_output, expert_outputs, expert_idx
+        return final_output, expert_outputs, expert_idx, expert_selection_logits

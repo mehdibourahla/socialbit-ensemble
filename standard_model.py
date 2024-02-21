@@ -67,7 +67,6 @@ class StandardModel(nn.Module):
 
             pos_dist = (anchor - positive).pow(2).sum(1)
 
-            # Check if a negative example is available
             if negative is not None:
                 neg_dist = (anchor - negative).pow(2).sum(1)
                 triplet_loss = F.relu(pos_dist - neg_dist + margin)
@@ -81,9 +80,7 @@ class StandardModel(nn.Module):
         if valid_triplets > 0:
             loss /= valid_triplets
         else:
-            loss = torch.tensor(
-                0.0, requires_grad=True
-            )  # Handle case where no valid triplets are found
+            loss = torch.tensor(0.0, requires_grad=True)
 
         return loss
 
@@ -96,6 +93,7 @@ class StandardModel(nn.Module):
         epochs=10,
     ):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
+        bce_exp_loss_fn = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
 
@@ -120,7 +118,7 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs_x = inputs_x.transpose(1, 2)
 
-                outputs_x, expert_outputs_x, expert_idx = (
+                outputs_x, expert_outputs_x, expert_idx, predicted_expert_idx = (
                     self(inputs_x, domains_x)
                     if self.num_experts > 1
                     else self(inputs_x)
@@ -134,11 +132,20 @@ class StandardModel(nn.Module):
                         "labels": labels_x.detach().cpu().numpy(),
                     }
                 )
-                loss_bce_x = bce_loss_fn(outputs_x, labels_x.float())
-                loss_cl_x = self.contrastive_loss(expert_outputs_x, expert_idx)
+
+                loss_bce_expert = bce_exp_loss_fn(
+                    predicted_expert_idx.float(), expert_idx.float()
+                )  # Expert loss
+                loss_bce_x = bce_loss_fn(
+                    outputs_x, labels_x.float()
+                )  # Social Interaction loss
+                loss_cl_x = self.contrastive_loss(
+                    expert_outputs_x, expert_idx
+                )  # Contrastive loss
                 alpha = 0.5
-                beta = 0.5
-                loss_x = alpha * loss_bce_x + beta * loss_cl_x
+                beta = 0.3
+                gamma = 0.2
+                loss_x = alpha * loss_bce_x + gamma * loss_bce_expert + beta * loss_cl_x
                 loss_x.backward()
                 optimizer.step()
 
@@ -170,16 +177,20 @@ class StandardModel(nn.Module):
                     if self.transpose_input:
                         inputs_v = inputs_v.transpose(1, 2)
 
-                    outputs_v, expert_outputs_v, expert_idx = (
-                        self(inputs_v, domains_v)
-                        if self.num_experts > 1
-                        else self(inputs_v)
+                    outputs_v, expert_outputs_v, expert_idx, predicted_expert_idx = (
+                        self(inputs_v) if self.num_experts > 1 else self(inputs_v)
+                    )
+                    loss_bce_expert = bce_exp_loss_fn(
+                        predicted_expert_idx.float(), domains_v.float()
                     )
                     loss_bce_v = bce_loss_fn(outputs_v, labels_v.float())
-                    loss_cl_v = self.contrastive_loss(expert_outputs_v, expert_idx)
+                    loss_cl_v = self.contrastive_loss(expert_outputs_v, domains_v)
                     alpha = 0.5
-                    beta = 0.5
-                    loss_v = alpha * loss_bce_v + beta * loss_cl_v
+                    beta = 0.3
+                    gamma = 0.2
+                    loss_v = (
+                        alpha * loss_bce_v + gamma * loss_bce_expert + beta * loss_cl_v
+                    )
 
                     val_loss += loss_v.item()
                     probs_v = torch.sigmoid(outputs_v)
@@ -224,8 +235,6 @@ class StandardModel(nn.Module):
 
     def evaluate_model(self, test_loader, device):
         self.eval()  # Set the model to evaluation mode
-        bce_loss_fn = nn.BCEWithLogitsLoss()
-        test_loss = 0
         TP = 0  # True Positives
         TN = 0  # True Negatives
         FP = 0  # False Positives
@@ -239,16 +248,10 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs = inputs.transpose(1, 2)
 
-                outputs, expert_outputs, expert_idx = (
-                    self(inputs, domains) if self.num_experts > 1 else self(inputs)
+                outputs, _, _, _ = (
+                    self(inputs) if self.num_experts > 1 else self(inputs)
                 )
-                loss_bce = bce_loss_fn(outputs, labels.float())
-                loss_cl = self.contrastive_loss(expert_outputs, expert_idx)
-                alpha = 0.5
-                beta = 0.5
-                loss = alpha * loss_bce + beta * loss_cl
 
-                test_loss += loss.item()
                 probs = torch.sigmoid(outputs)
                 for i in range(len(filename)):
                     prediction = probs[i].cpu().numpy()
@@ -273,11 +276,9 @@ class StandardModel(nn.Module):
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = (TP + TN) / (TP + TN + FP + FN)
-        test_loss /= len(test_loader)
 
-        print(f"Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
         print(
             f"Sensitivity (Recall): {sensitivity:.2f}, Specificity: {specificity:.2f}"
         )
 
-        return test_loss, accuracy, sensitivity, specificity, predictions
+        return accuracy, sensitivity, specificity, predictions
