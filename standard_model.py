@@ -96,6 +96,10 @@ class StandardModel(nn.Module):
         bce_exp_loss_fn = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
+        # TODO: Transform these into hyperparameters
+        alpha = 0.5
+        beta = 0.3
+        gamma = 0.2
 
         train_losses = []
         val_losses = []
@@ -110,7 +114,7 @@ class StandardModel(nn.Module):
             # Training phase
             self.train()
             meta_data = []
-            for i, batch_x in enumerate(train_loader_x):
+            for _, batch_x in enumerate(train_loader_x):
                 _, inputs_x, labels_x, domains_x = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
@@ -125,10 +129,10 @@ class StandardModel(nn.Module):
                 )
                 meta_data.append(
                     {
-                        "domain_representation": expert_outputs_x.detach()
+                        "representations": expert_outputs_x.detach()
                         .cpu()
                         .numpy(),
-                        "domain_idx": expert_idx.detach().cpu().numpy(),
+                        "domains": expert_idx.detach().cpu().numpy(),
                         "labels": labels_x.detach().cpu().numpy(),
                     }
                 )
@@ -142,9 +146,7 @@ class StandardModel(nn.Module):
                 loss_cl_x = self.contrastive_loss(
                     expert_outputs_x, expert_idx
                 )  # Contrastive loss
-                alpha = 0.5
-                beta = 0.3
-                gamma = 0.2
+
                 loss_x = alpha * loss_bce_x + gamma * loss_bce_expert + beta * loss_cl_x
                 loss_x.backward()
                 optimizer.step()
@@ -185,9 +187,7 @@ class StandardModel(nn.Module):
                     )
                     loss_bce_v = bce_loss_fn(outputs_v, labels_v.float())
                     loss_cl_v = self.contrastive_loss(expert_outputs_v, domains_v)
-                    alpha = 0.5
-                    beta = 0.3
-                    gamma = 0.2
+
                     loss_v = (
                         alpha * loss_bce_v + gamma * loss_bce_expert + beta * loss_cl_v
                     )
@@ -242,7 +242,7 @@ class StandardModel(nn.Module):
         predictions = []
         with torch.no_grad():  # No gradient calculation for evaluation
             for batch in test_loader:
-                filename, inputs, labels, domains = batch
+                filename, inputs, labels, _ = batch
                 inputs, labels = inputs.to(device), labels.to(device)
 
                 if self.transpose_input:

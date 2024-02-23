@@ -8,7 +8,11 @@ import os
 
 
 class YAMNetFeaturesDatasetDavid(Dataset):
-    def __init__(self, dataframe: pd.DataFrame, data_dir: str, domain: int = None):
+    def __init__(
+        self,
+        dataframe: pd.DataFrame,
+        data_dir: str,
+    ):
         """
         Initializes the dataset.
 
@@ -16,7 +20,6 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         """
         self.dataframe = dataframe
         self.data_dir = data_dir
-        self.domain = domain
         # Ensure the DataFrame index is a list for easy access
         self.filenames = dataframe.filename.tolist()
 
@@ -27,12 +30,8 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         # Retrieve the filename using the DataFrame's index
         fpath = os.path.join(self.data_dir, self.filenames[idx])
         # Retrieve the label and domain directly from the DataFrame
-        label = self.dataframe.iloc[idx]["social_interaction"]
-        domain = (
-            self.domain
-            if self.domain is not None
-            else self.dataframe.iloc[idx]["microphone"] - 1
-        )
+        label = self.dataframe.iloc[idx]["is_social"]
+        domain = self.dataframe.iloc[idx]["dataset"]
 
         try:
             # Load the feature data from the file
@@ -51,8 +50,6 @@ class YAMNetFeaturesDatasetDavid(Dataset):
             data_tensor = torch.tensor(
                 [], dtype=torch.float32
             )  # Or use an empty tensor
-
-        # domain_tensor = self.strings_to_categorical_tensor(domain)
 
         # Convert label and domain to tensors
         label_tensor = torch.tensor([label])
@@ -101,8 +98,6 @@ class YAMNetFeaturesDatasetEAR(Dataset):
             data_tensor = torch.tensor(
                 [], dtype=torch.float32
             )  # Or use an empty tensor
-
-        # domain_tensor = self.strings_to_categorical_tensor(domain)
 
         # Convert label and domain to tensors
         label_tensor = torch.tensor([label])

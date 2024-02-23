@@ -5,98 +5,17 @@ from sklearn.utils.class_weight import compute_class_weight
 from models import MasterModel, BiLSTMModel
 import torch
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
 import pandas as pd
-import logging
 import numpy as np
-
-
-def plot_training_curves(
-    train_losses,
-    val_losses,
-    train_accuracies,
-    val_accuracies,
-    output_dir,
-):
-    output_path = os.path.join(output_dir, "training_curves.png")
-    epochs = range(1, len(train_losses) + 1)
-
-    plt.figure(figsize=(12, 4))
-
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, train_losses, label="Training Loss")
-    plt.plot(epochs, val_losses, label="Validation Loss")
-    plt.title("Training and Validation Loss")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.legend()
-
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, train_accuracies, label="Training Accuracy")
-    plt.plot(epochs, val_accuracies, label="Validation Accuracy")
-    plt.title("Training and Validation Accuracy")
-    plt.xlabel("Epochs")
-    plt.ylabel("Accuracy")
-    plt.legend()
-
-    plt.tight_layout()
-    plt.savefig(f"{output_path}")
-
-
-def setup_logging(output_dir):
-    log_format = "%(asctime)s - %(levelname)s - %(message)s"
-    logging.basicConfig(
-        level=logging.INFO,
-        format=log_format,
-        handlers=[
-            logging.FileHandler(f"{output_dir}/training.log"),
-            logging.StreamHandler(),
-        ],
-    )
-
-    logging.info("Logger is configured.")
-
-
-def load_csv_files(directory_path):
-    # Define the file names
-    file_names = ["train.csv", "val.csv", "test.csv"]
-
-    # Initialize an empty dictionary to store the dataframes
-    dataframes = {}
-
-    # Iterate through the file names and load each into a DataFrame
-    for file_name in file_names:
-        file_path = os.path.join(directory_path, file_name)
-        if os.path.exists(file_path):
-            # Load the CSV file into a DataFrame
-            df = pd.read_csv(file_path)
-
-            # Transform "dataset" column into a categorical variable
-            df["dataset"] = pd.Categorical(df["dataset"]).codes
-
-            dataframes[file_name[:-4]] = df
-        else:
-            print(f"File {file_name} not found in directory.")
-
-    # Return the DataFrames
-    return dataframes.get("train"), dataframes.get("val"), dataframes.get("test")
-
-
-def setup_directories(output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-
-
-def load_and_prepare_data(data_dir, i_fold, j_subfold, num_folds=5):
-    train_data, val_data, test_data = load_csv_files(data_dir)
-    data = pd.concat([train_data, val_data, test_data])
-    fold_size = len(data) // num_folds
-    folds = [data[i * fold_size : (i + 1) * fold_size] for i in range(num_folds)]
-    test_fold = folds[i_fold]
-    validation_fold = folds[j_subfold]
-    training_fold = pd.concat(
-        folds[i] for i in range(num_folds) if i not in [i_fold, j_subfold]
-    )
-    return training_fold, validation_fold, test_fold
+from utils import (
+    process_data,
+    plot_training_curves,
+    plot_tsne_by_domain_epoch,
+    plot_tsne_by_label_epoch,
+    setup_directories,
+    setup_logging,
+    load_and_prepare_data,
+)
 
 
 def compute_weights(training_fold):
@@ -114,7 +33,7 @@ def initialize_model(args, class_weights):
         model = BiLSTMModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
         model = MasterModel(
-            num_experts=2,
+            num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
             skip_connection=args.skip_connection,
         ).to(device)
@@ -135,12 +54,20 @@ def get_data_loaders(training_fold, validation_fold, test_fold):
 
 
 def train_and_evaluate_model(
-    model, train_gen, val_gen, test_gen, device, output_dir, current_output_dir
+    model,
+    train_gen,
+    val_gen,
+    test_gen,
+    device,
+    output_dir,
+    current_output_dir,
+    epochs=100,
 ):
-    train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
-        train_gen, val_gen, device, output_dir, epochs=100
+    train_losses, val_losses, train_accuracies, val_accuracies, meta_over_epochs = (
+        model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
     )
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
+    print("Starting evaluation on test set...")
     evaluate_and_save_results(
         model,
         test_gen,
@@ -151,17 +78,28 @@ def train_and_evaluate_model(
     plot_training_curves(
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
+    print("Starting plotting t-SNE...")
+    tsne_results, domains, labels = process_data(meta_over_epochs)
+    num_epochs = len(meta_over_epochs)
+    samples_per_epoch = len(meta_over_epochs[0])
+    plot_tsne_by_domain_epoch(
+        tsne_results, domains, num_epochs, samples_per_epoch, current_output_dir
+    )
+    plot_tsne_by_label_epoch(
+        tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
+    )
+    return model
 
 
 def evaluate_and_save_results(
     model, data_loader, device, results_file_path, predictions_file_name
 ):
-    test_loss, test_accuracy, sensitivity, specificity, predictions = (
-        model.evaluate_model(data_loader, device)
+    test_accuracy, sensitivity, specificity, predictions = model.evaluate_model(
+        data_loader, device
     )
     with open(results_file_path, "w") as f:
         f.write(
-            f"Test Loss: {test_loss}\nTest Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
+            f"Test Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
         )
     pd.DataFrame(predictions).to_csv(
         os.path.join(os.path.dirname(results_file_path), predictions_file_name),
@@ -171,72 +109,13 @@ def evaluate_and_save_results(
     return predictions
 
 
-def compute_save_results(predictions, results_filename):
-
-    true_labels = [p["true_label"] for p in predictions]
-    positive_predictions = [p["positive"] for p in predictions]
-    accuracy = sum(
-        [
-            1 if (p > 0.5 and t == 1) or (p <= 0.5 and t == 0) else 0
-            for p, t in zip(positive_predictions, true_labels)
-        ]
-    ) / len(true_labels)
-    sensitivity = sum(
-        [
-            1 if p > 0.5 and t == 1 else 0
-            for p, t in zip(positive_predictions, true_labels)
-        ]
-    ) / sum(true_labels)
-    specificity = sum(
-        [
-            1 if p <= 0.5 and t == 0 else 0
-            for p, t in zip(positive_predictions, true_labels)
-        ]
-    ) / (len(true_labels) - sum(true_labels))
-
-    with open(f"{results_filename}.txt", "w") as f:
-        f.write(
-            f"Test Accuracy: {accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
-        )
-
-
-def fuse_predictions_average(domain_0_predictions, domain_1_predictions):
-    fused_predictions = []
-    for d0_pred in domain_0_predictions:
-        matching_d1_pred = next(
-            filter(
-                lambda d: d["filename"] == d0_pred["filename"], domain_1_predictions
-            ),
-            None,
-        )
-        if matching_d1_pred:
-            averaged_prediction = {
-                "filename": d0_pred["filename"],
-                "true_label": d0_pred["true_label"],
-                "positive": (d0_pred["positive"] + matching_d1_pred["positive"]) / 2,
-                "negative": (d0_pred["negative"] + matching_d1_pred["negative"]) / 2,
-            }
-            fused_predictions.append(averaged_prediction)
-    return fused_predictions
-
-
-def fuse_predictions_most_confident(domain_0_predictions, domain_1_predictions):
-    fused_predictions = []
-    for d0_pred in domain_0_predictions:
-        matching_d1_pred = next(
-            filter(
-                lambda d: d["filename"] == d0_pred["filename"], domain_1_predictions
-            ),
-            None,
-        )
-        if matching_d1_pred:
-            if max(d0_pred["positive"], d0_pred["negative"]) > max(
-                matching_d1_pred["positive"], matching_d1_pred["negative"]
-            ):
-                fused_predictions.append(d0_pred)
-            else:
-                fused_predictions.append(matching_d1_pred)
-    return fused_predictions
+# List of hyperparameters/variants to try
+# 1. Undersampling vs. class weights
+# 2. Different architectures (Baseline, MasterModel with and without skip connection)
+# 3. Different number of experts
+# 4. Alpha, beta, gamma for the loss function
+# 5. Different learning rates
+# 6. The definition of Social Interaction
 
 
 def main(args):
@@ -256,57 +135,42 @@ def main(args):
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
-    train_and_evaluate_model(
-        model, train_gen, val_gen, test_gen, device, args.output_dir, current_output_dir
+    model = train_and_evaluate_model(
+        model,
+        train_gen,
+        val_gen,
+        test_gen,
+        device,
+        args.output_dir,
+        current_output_dir,
+        epochs=args.epochs,
     )
 
     # Evaluate on external test data
     ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
     ext_test_gen = DataLoader(
-        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, domain=0),
+        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, is_eval=True),
         batch_size=32,
         shuffle=False,
     )
-    domain_0_predictions = evaluate_and_save_results(
+
+    evaluate_and_save_results(
         model,
         ext_test_gen,
         device,
-        os.path.join(current_output_dir, "ext_test_results_domain_0.txt"),
-        "ext_test_predictions_domain_0.csv",
-    )
-
-    # Try with domain 1
-    ext_test_gen = DataLoader(
-        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, domain=1),
-        batch_size=32,
-        shuffle=False,
-    )
-    domain_1_predictions = evaluate_and_save_results(
-        model,
-        ext_test_gen,
-        device,
-        os.path.join(current_output_dir, "ext_test_results_domain_1.txt"),
-        "ext_test_predictions_domain_1.csv",
-    )
-
-    fused_predictions_average = fuse_predictions_average(
-        domain_0_predictions, domain_1_predictions
-    )
-    fused_predictions_confident = fuse_predictions_most_confident(
-        domain_0_predictions, domain_1_predictions
-    )
-
-    compute_save_results(
-        fused_predictions_average,
-        os.path.join(current_output_dir, "ext_test_results_fused_average"),
-    )
-    compute_save_results(
-        fused_predictions_confident,
-        os.path.join(current_output_dir, "ext_test_results_fused_confident"),
+        os.path.join(current_output_dir, "ext_test_results.txt"),
+        "ext_test_predictions.csv",
     )
 
 
 def initialize_args(parser):
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
+    parser.add_argument(
+        "--num_experts",
+        type=int,
+        default=2,
+        help="Number of experts to use in the MasterModel",
+    )
     parser.add_argument(
         "--data_dir",
         required=True,

@@ -147,15 +147,13 @@ class MasterModel(StandardModel):
 
         # Continue with aggregation of expert outputs
         expert_outputs_flattened = expert_outputs.view(x.size(0), -1)
-        aggregated_output = self.aggregation_layer(expert_outputs_flattened)
+        final_output = self.aggregation_layer(expert_outputs_flattened)
         if self.skip_connection:
             intermediate1_flat = intermediate1.view(x.size(0), -1)
             intermediate2_flat = intermediate2.view(x.size(0), -1)
             combined_features = torch.cat(
-                [aggregated_output, intermediate1_flat, intermediate2_flat], dim=1
+                [final_output, intermediate1_flat, intermediate2_flat], dim=1
             )
             final_output = self.final_classification_layer(combined_features)
-        else:
-            final_output = aggregated_output
 
         return final_output, expert_outputs, expert_idx, expert_selection_logits
