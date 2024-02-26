@@ -56,26 +56,26 @@ class StandardModel(nn.Module):
         negative_idx = random.choice(different_domain_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, margin=1.0):
+    def contrastive_loss(self, representations, domains, margin=1):
         loss = 0.0
         valid_triplets = 0
-
         for i in range(representations.size(0)):
             anchor = representations[i]
             positive = self.get_positive_example(representations, domains, i)
             negative = self.get_negative_example(representations, domains, i)
 
-            pos_dist = (anchor - positive).pow(2).sum(1)
-
+            pos_dist = F.pairwise_distance(anchor, positive, keepdim=True)
             if negative is not None:
-                neg_dist = (anchor - negative).pow(2).sum(1)
+                neg_dist = F.pairwise_distance(anchor, negative, keepdim=True)
                 triplet_loss = F.relu(pos_dist - neg_dist + margin)
             else:
-                # triplet_loss = F.relu(pos_dist + margin)
+                triplet_loss = F.relu(pos_dist + margin)
+                print(
+                    "Warning: Negative example not found. This may be due to insufficient domain variety in the batch."
+                )
                 continue
-
-            loss += triplet_loss.mean()
             valid_triplets += 1
+            loss += triplet_loss.mean()
 
         if valid_triplets > 0:
             loss /= valid_triplets
@@ -93,13 +93,13 @@ class StandardModel(nn.Module):
         epochs=10,
     ):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
-        bce_exp_loss_fn = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
+        signature_matrix = torch.zeros(self.num_experts, 64, 3, device=device)
+
         # TODO: Transform these into hyperparameters
-        alpha = 0.5
-        beta = 0.3
-        gamma = 0.2
+        alpha = 0.6
+        beta = 0.4
 
         train_losses = []
         val_losses = []
@@ -111,6 +111,8 @@ class StandardModel(nn.Module):
             correct = 0
             total = 0
 
+            signature_sums = torch.zeros_like(signature_matrix)
+            counts = torch.zeros(self.num_experts, dtype=torch.long, device=device)
             # Training phase
             self.train()
             meta_data = []
@@ -122,37 +124,40 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs_x = inputs_x.transpose(1, 2)
 
-                outputs_x, expert_outputs_x, expert_idx, predicted_expert_idx = (
+                final_output_x, representations_x, expert_idx_x = (
                     self(inputs_x, domains_x)
                     if self.num_experts > 1
                     else self(inputs_x)
                 )
+
                 meta_data.append(
                     {
-                        "representations": expert_outputs_x.detach()
-                        .cpu()
-                        .numpy(),
-                        "domains": expert_idx.detach().cpu().numpy(),
+                        "representations": representations_x.detach().cpu().numpy(),
+                        "domains": expert_idx_x.detach().cpu().numpy(),
                         "labels": labels_x.detach().cpu().numpy(),
                     }
                 )
 
-                loss_bce_expert = bce_exp_loss_fn(
-                    predicted_expert_idx.float(), expert_idx.float()
-                )  # Expert loss
+                # Update signature sums and counts
+                for idx in range(self.num_experts):
+                    mask = expert_idx_x == idx
+                    if mask.any():
+                        signature_sums[idx] += representations_x[mask].sum(dim=0)
+                        counts[idx] += mask.sum()
+
                 loss_bce_x = bce_loss_fn(
-                    outputs_x, labels_x.float()
+                    final_output_x, labels_x.float()
                 )  # Social Interaction loss
                 loss_cl_x = self.contrastive_loss(
-                    expert_outputs_x, expert_idx
+                    representations_x, expert_idx_x
                 )  # Contrastive loss
 
-                loss_x = alpha * loss_bce_x + gamma * loss_bce_expert + beta * loss_cl_x
+                loss_x = alpha * loss_bce_x + beta * loss_cl_x
                 loss_x.backward()
                 optimizer.step()
 
                 total_loss += loss_x.item()
-                probs = torch.sigmoid(outputs_x)
+                probs = torch.sigmoid(final_output_x)
                 preds = (probs > 0.5).float()
                 correct += (preds == labels_x).float().sum().item()
                 total += labels_x.numel()
@@ -165,6 +170,10 @@ class StandardModel(nn.Module):
             logging.info(
                 f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
             )
+            # After the epoch, update the signatures
+            for idx in range(self.num_experts):
+                if counts[idx] > 0:
+                    signature_matrix[idx] = signature_sums[idx] / counts[idx]
 
             # Validation phase
             self.eval()  # Set the model to evaluation mode
@@ -173,27 +182,25 @@ class StandardModel(nn.Module):
             val_total = 0
             with torch.no_grad():  # No gradient calculation for validation
                 for i, batch in enumerate(validation_loader):
-                    _, inputs_v, labels_v, domains_v = batch
+                    _, inputs_v, labels_v, _ = batch
                     inputs_v, labels_v = inputs_v.to(device), labels_v.to(device)
 
                     if self.transpose_input:
                         inputs_v = inputs_v.transpose(1, 2)
 
-                    outputs_v, expert_outputs_v, expert_idx, predicted_expert_idx = (
-                        self(inputs_v) if self.num_experts > 1 else self(inputs_v)
+                    final_output_v, representations_v, expert_idx_v = (
+                        self(inputs_v, signature_matrix=signature_matrix)
+                        if self.num_experts > 1
+                        else self(inputs_v)
                     )
-                    loss_bce_expert = bce_exp_loss_fn(
-                        predicted_expert_idx.float(), domains_v.float()
-                    )
-                    loss_bce_v = bce_loss_fn(outputs_v, labels_v.float())
-                    loss_cl_v = self.contrastive_loss(expert_outputs_v, domains_v)
 
-                    loss_v = (
-                        alpha * loss_bce_v + gamma * loss_bce_expert + beta * loss_cl_v
-                    )
+                    loss_bce_v = bce_loss_fn(final_output_v, labels_v.float())
+                    loss_cl_v = self.contrastive_loss(representations_v, expert_idx_v)
+
+                    loss_v = alpha * loss_bce_v + beta * loss_cl_v
 
                     val_loss += loss_v.item()
-                    probs_v = torch.sigmoid(outputs_v)
+                    probs_v = torch.sigmoid(final_output_v)
                     preds_v = (probs_v > 0.5).float()
                     val_correct += (preds_v == labels_v).float().sum().item()
                     val_total += labels_v.numel()
@@ -226,6 +233,7 @@ class StandardModel(nn.Module):
                 )
                 break
         return (
+            signature_matrix,
             train_losses,
             val_losses,
             train_accuracies,
@@ -233,7 +241,7 @@ class StandardModel(nn.Module):
             meta_over_epochs,
         )
 
-    def evaluate_model(self, test_loader, device):
+    def evaluate_model(self, test_loader, signature_matrix, device):
         self.eval()  # Set the model to evaluation mode
         TP = 0  # True Positives
         TN = 0  # True Negatives
@@ -248,8 +256,14 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs = inputs.transpose(1, 2)
 
-                outputs, _, _, _ = (
-                    self(inputs) if self.num_experts > 1 else self(inputs)
+                (
+                    outputs,
+                    _,
+                    _,
+                ) = (
+                    self(inputs, signature_matrix=signature_matrix)
+                    if self.num_experts > 1
+                    else self(inputs)
                 )
 
                 probs = torch.sigmoid(outputs)

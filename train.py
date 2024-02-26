@@ -63,14 +63,20 @@ def train_and_evaluate_model(
     current_output_dir,
     epochs=100,
 ):
-    train_losses, val_losses, train_accuracies, val_accuracies, meta_over_epochs = (
-        model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
-    )
+    (
+        signature_matrix,
+        train_losses,
+        val_losses,
+        train_accuracies,
+        val_accuracies,
+        meta_over_epochs,
+    ) = model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
     print("Starting evaluation on test set...")
     evaluate_and_save_results(
         model,
         test_gen,
+        signature_matrix,
         device,
         os.path.join(current_output_dir, "test_results.txt"),
         "test_predictions.csv",
@@ -88,14 +94,19 @@ def train_and_evaluate_model(
     plot_tsne_by_label_epoch(
         tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
     )
-    return model
+    return model, signature_matrix
 
 
 def evaluate_and_save_results(
-    model, data_loader, device, results_file_path, predictions_file_name
+    model,
+    data_loader,
+    signature_matrix,
+    device,
+    results_file_path,
+    predictions_file_name,
 ):
     test_accuracy, sensitivity, specificity, predictions = model.evaluate_model(
-        data_loader, device
+        data_loader, signature_matrix, device
     )
     with open(results_file_path, "w") as f:
         f.write(
@@ -135,7 +146,7 @@ def main(args):
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
-    model = train_and_evaluate_model(
+    model, signature_matrix = train_and_evaluate_model(
         model,
         train_gen,
         val_gen,
@@ -149,7 +160,7 @@ def main(args):
     # Evaluate on external test data
     ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
     ext_test_gen = DataLoader(
-        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir, is_eval=True),
+        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir),
         batch_size=32,
         shuffle=False,
     )
@@ -157,6 +168,7 @@ def main(args):
     evaluate_and_save_results(
         model,
         ext_test_gen,
+        signature_matrix,
         device,
         os.path.join(current_output_dir, "ext_test_results.txt"),
         "ext_test_predictions.csv",
