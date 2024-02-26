@@ -68,7 +68,6 @@ def train_and_evaluate_model(
         val_losses,
         train_accuracies,
         val_accuracies,
-        meta_over_epochs,
     ) = model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
     # Save the model and signature matrix
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
@@ -88,16 +87,16 @@ def train_and_evaluate_model(
     plot_training_curves(
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
-    print("Starting plotting t-SNE...")
-    tsne_results, domains, labels = process_data(meta_over_epochs)
-    num_epochs = len(meta_over_epochs)
-    samples_per_epoch = len(meta_over_epochs[0])
-    plot_tsne_by_domain_epoch(
-        tsne_results, domains, num_epochs, samples_per_epoch, current_output_dir
-    )
-    plot_tsne_by_label_epoch(
-        tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
-    )
+    # print("Starting plotting t-SNE...")
+    # tsne_results, domains, labels = process_data(meta_over_epochs)
+    # num_epochs = len(meta_over_epochs)
+    # samples_per_epoch = len(meta_over_epochs[0])
+    # plot_tsne_by_domain_epoch(
+    #     tsne_results, domains, num_epochs, samples_per_epoch, current_output_dir
+    # )
+    # plot_tsne_by_label_epoch(
+    #     tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
+    # )
     return model, signature_matrix
 
 

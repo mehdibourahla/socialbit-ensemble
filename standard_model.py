@@ -105,7 +105,6 @@ class StandardModel(nn.Module):
         val_losses = []
         train_accuracies = []
         val_accuracies = []
-        meta_over_epochs = []
         for epoch in range(epochs):
             total_loss = 0
             correct = 0
@@ -115,7 +114,6 @@ class StandardModel(nn.Module):
             counts = torch.zeros(self.num_experts, dtype=torch.long, device=device)
             # Training phase
             self.train()
-            meta_data = []
             for _, batch_x in enumerate(train_loader_x):
                 _, inputs_x, labels_x, domains_x = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
@@ -128,14 +126,6 @@ class StandardModel(nn.Module):
                     self(inputs_x, domains_x)
                     if self.num_experts > 1
                     else self(inputs_x)
-                )
-
-                meta_data.append(
-                    {
-                        "representations": representations_x.detach().cpu().numpy(),
-                        "domains": expert_idx_x.detach().cpu().numpy(),
-                        "labels": labels_x.detach().cpu().numpy(),
-                    }
                 )
 
                 # Update signature sums and counts
@@ -161,7 +151,6 @@ class StandardModel(nn.Module):
                 preds = (probs > 0.5).float()
                 correct += (preds == labels_x).float().sum().item()
                 total += labels_x.numel()
-            meta_over_epochs.append(meta_data)
             train_accuracy = correct / total
             total_loss /= len(train_loader_x)
             print(
@@ -238,7 +227,6 @@ class StandardModel(nn.Module):
             val_losses,
             train_accuracies,
             val_accuracies,
-            meta_over_epochs,
         )
 
     def evaluate_model(self, test_loader, signature_matrix, device):
