@@ -71,7 +71,12 @@ def train_and_evaluate_model(
         val_accuracies,
         meta_over_epochs,
     ) = model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
+    # Save the model and signature matrix
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
+    torch.save(
+        signature_matrix, os.path.join(current_output_dir, "signature_matrix.pth")
+    )
+
     print("Starting evaluation on test set...")
     evaluate_and_save_results(
         model,
