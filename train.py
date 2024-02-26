@@ -35,7 +35,6 @@ def initialize_model(args, class_weights):
         model = MasterModel(
             num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
-            skip_connection=args.skip_connection,
         ).to(device)
     return model, device
 
@@ -206,9 +205,7 @@ def initialize_args(parser):
 
     parser.add_argument("--i_fold", type=int, help="Fold number")
     parser.add_argument("--j_subfold", type=int, help="Subfold number")
-    parser.add_argument(
-        "--skip_connection", action="store_true", help="Use skip connection"
-    )
+
     parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
 
 

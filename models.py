@@ -106,14 +106,12 @@ class MasterModel(StandardModel):
         num_experts=2,
         class_weights_tensor=None,
         num_classes=2,
-        skip_connection=True,
     ):
         super(MasterModel, self).__init__(
             class_weights_tensor=class_weights_tensor,
             num_classes=num_classes,
             num_experts=num_experts,
         )
-        self.skip_connection = skip_connection
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
             [ExpertModel(num_classes) for _ in range(num_experts)]
