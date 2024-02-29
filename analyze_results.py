@@ -120,14 +120,12 @@ def find_and_save_best_model(
 
 
 def main(args):
-    analyze_test_results(args.output_dir, "ext_test_results_fused_average")
-    find_and_save_best_model(
-        args.output_dir, "ext_test_results_fused_average", metric="Test Accuracy"
-    )
+    analyze_test_results(args.output_dir, "test_results")
+    find_and_save_best_model(args.output_dir, "test_results", metric="Test Accuracy")
 
-    analyze_test_results(args.output_dir, "ext_test_results_fused_confident")
+    analyze_test_results(args.output_dir, "ext_test_results")
     find_and_save_best_model(
-        args.output_dir, "ext_test_results_fused_confident", metric="Test Accuracy"
+        args.output_dir, "ext_test_results", metric="Test Accuracy"
     )
 
 
