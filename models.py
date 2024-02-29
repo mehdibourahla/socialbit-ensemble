@@ -118,49 +118,47 @@ class MasterModel(StandardModel):
         )
 
     def forward(self, x, expert_idx=None, signature_matrix=None):
-        shared_features = self.shared_extractor(
-            x
-        )  # Get the shared features from YAMNet
+        shared_features = self.shared_extractor(x)
 
         expert_outputs = torch.zeros(
             x.size(0), self.num_experts, self.num_classes, device=x.device
-        )  # Initialize the expert outputs
+        )
         expert_representations = torch.zeros(
             x.size(0), self.num_experts, 64, 3, device=x.device
-        )  # Initialize the expert representations
+        )
 
-        # Get output and representation for each expert
         for i in range(self.num_experts):
             output, representation = self.experts[i](shared_features)
             expert_outputs[:, i, :] = output
             expert_representations[:, i, :, :] = representation
 
-        # Get output and representation for each sample
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(
-            x.size(0), 64, 3, device=x.device
-        )  # [batch_size, 64, 3]
+        representations = torch.zeros(x.size(0), 64, 3, device=x.device)
         if signature_matrix is not None:  # Inference mode
             expert_idx = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
-            # Calculate distances between input representations and expert signatures
-            distances = torch.full(
-                (x.size(0), self.num_experts), float("inf"), device=x.device
-            )
-            for i in range(self.num_experts):
-                # Expand signature matrix to match the batch size for broadcast subtraction
-                signature_expanded = (
-                    signature_matrix[i]
-                    .unsqueeze(0)
-                    .expand(x.size(0), *signature_matrix[i].size())
-                )
-                # Calculate Euclidean distance between each input's representation and the expert's signature
-                distance = torch.norm(
-                    expert_representations[:, i, :, :] - signature_expanded, dim=(1, 2)
-                )
-                distances[:, i] = distance
+            similarities = torch.empty(x.size(0), self.num_experts, device=x.device)
 
-            # Select the expert with the minimum distance for each input
-            _, closest_experts = torch.min(distances, dim=1)
+            # Ensure the signature matrix is flattened [num_experts, 64*3]
+            flattened_signature_matrix = signature_matrix.view(self.num_experts, -1)
+
+            for i in range(self.num_experts):
+                # Flatten the representations for the current expert [batch, 64*3]
+                flattened_representations = expert_representations[:, i, :, :].reshape(
+                    -1, 64 * 3
+                )
+
+                # Calculate cosine similarity for each input with the current expert's signature
+                # Note: No need to expand the signature since we're comparing each batch element to the same signature
+                sim = F.cosine_similarity(
+                    flattened_representations,
+                    flattened_signature_matrix[i].unsqueeze(0),
+                    dim=1,
+                )
+                similarities[:, i] = sim
+
+            # Since higher similarity indicates closer match, use argmax to find the closest expert
+            closest_experts = torch.argmax(similarities, dim=1)
+
             for sample in range(x.size(0)):
                 final_output[sample, :] = expert_outputs[
                     sample, closest_experts[sample], :

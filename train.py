@@ -53,22 +53,21 @@ def get_data_loaders(training_fold, validation_fold, test_fold):
 
 
 def train_and_evaluate_model(
-    model,
-    train_gen,
-    val_gen,
-    test_gen,
-    device,
-    output_dir,
-    current_output_dir,
-    epochs=100,
+    model, train_gen, val_gen, test_gen, device, current_output_dir, args
 ):
+    epochs = args.epochs
+    output_dir = args.output_dir
+    use_metadata = args.metadata
     (
         signature_matrix,
+        signature_matrix_over_epochs,
         train_losses,
         val_losses,
         train_accuracies,
         val_accuracies,
-    ) = model.train_model(train_gen, val_gen, device, output_dir, epochs=epochs)
+    ) = model.train_model(
+        train_gen, val_gen, device, output_dir, epochs=epochs, use_metadata=use_metadata
+    )
     # Save the model and signature matrix
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
     torch.save(
@@ -97,7 +96,7 @@ def train_and_evaluate_model(
     # plot_tsne_by_label_epoch(
     #     tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
     # )
-    return model, signature_matrix
+    return model, signature_matrix, signature_matrix_over_epochs
 
 
 def evaluate_and_save_results(
@@ -149,15 +148,14 @@ def main(args):
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
-    model, signature_matrix = train_and_evaluate_model(
+    model, signature_matrix, _ = train_and_evaluate_model(
         model,
         train_gen,
         val_gen,
         test_gen,
         device,
-        args.output_dir,
         current_output_dir,
-        epochs=args.epochs,
+        args=args,
     )
 
     # Evaluate on external test data
@@ -206,6 +204,7 @@ def initialize_args(parser):
     parser.add_argument("--j_subfold", type=int, help="Subfold number")
 
     parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
+    parser.add_argument("--metadata", action="store_true", help="Use metadata")
 
 
 if __name__ == "__main__":

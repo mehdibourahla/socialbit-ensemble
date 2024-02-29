@@ -60,13 +60,20 @@ class StandardModel(nn.Module):
         loss = 0.0
         valid_triplets = 0
         for i in range(representations.size(0)):
-            anchor = representations[i]
-            positive = self.get_positive_example(representations, domains, i)
-            negative = self.get_negative_example(representations, domains, i)
+            anchor = representations[i].unsqueeze(0)
+            positive = self.get_positive_example(representations, domains, i).unsqueeze(
+                0
+            )
+            pos_sim = F.cosine_similarity(anchor, positive)
+            pos_dist = 1 - pos_sim
 
-            pos_dist = F.pairwise_distance(anchor, positive, keepdim=True)
+            negative = self.get_negative_example(representations, domains, i)
             if negative is not None:
-                neg_dist = F.pairwise_distance(anchor, negative, keepdim=True)
+                negative = negative.unsqueeze(0)
+                neg_sim = F.cosine_similarity(anchor, negative)
+                neg_dist = 1 - neg_sim
+
+                # Triplet loss calculation with cosine distance
                 triplet_loss = F.relu(pos_dist - neg_dist + margin)
             else:
                 triplet_loss = F.relu(pos_dist + margin)
@@ -91,6 +98,7 @@ class StandardModel(nn.Module):
         device,
         output_dir,
         epochs=10,
+        use_metadata=False,
     ):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
@@ -105,6 +113,7 @@ class StandardModel(nn.Module):
         val_losses = []
         train_accuracies = []
         val_accuracies = []
+        meta_over_epochs = []
         for epoch in range(epochs):
             total_loss = 0
             correct = 0
@@ -163,7 +172,8 @@ class StandardModel(nn.Module):
             for idx in range(self.num_experts):
                 if counts[idx] > 0:
                     signature_matrix[idx] = signature_sums[idx] / counts[idx]
-
+            if use_metadata:
+                meta_over_epochs.append(signature_matrix.clone())
             # Validation phase
             self.eval()  # Set the model to evaluation mode
             val_loss = 0
@@ -223,6 +233,7 @@ class StandardModel(nn.Module):
                 break
         return (
             signature_matrix,
+            meta_over_epochs,
             train_losses,
             val_losses,
             train_accuracies,
