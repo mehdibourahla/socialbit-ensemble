@@ -98,8 +98,8 @@ class StandardModel(nn.Module):
         signature_matrix = torch.zeros(self.num_experts, 64, 3, device=device)
 
         # TODO: Transform these into hyperparameters
-        alpha = 0.6
-        beta = 0.4
+        alpha = 1
+        beta = 1
 
         train_losses = []
         val_losses = []
@@ -132,7 +132,7 @@ class StandardModel(nn.Module):
                 for idx in range(self.num_experts):
                     mask = expert_idx_x == idx
                     if mask.any():
-                        signature_sums[idx] += representations_x[mask].sum(dim=0)
+                        signature_sums[idx] += representations_x[mask].mean(dim=0)
                         counts[idx] += mask.sum()
 
                 loss_bce_x = bce_loss_fn(
