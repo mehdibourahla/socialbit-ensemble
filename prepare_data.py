@@ -5,8 +5,66 @@
 import pandas as pd
 import argparse
 import os
-
+import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+from scipy.io import loadmat
+
+
+def load_features(dataframe):
+    filenames = dataframe["filename"].tolist()
+    features = []
+    for filename in filenames:
+        data = loadmat(filename)["yamnet_top"]
+        data = data[:, :30]
+        if data.shape[1] < 30:
+            padding = np.zeros((data.shape[0], 30 - data.shape[1]))
+            data = np.concatenate((data, padding), axis=1)
+        features.append(data)
+    return filenames, np.stack(features)
+
+
+def create_domains(dataframe, output_dir):
+    filenames, data = load_features(dataframe)
+    data_reshaped = data.reshape(-1, 1024 * 30)
+
+    # Normalize the embeddings
+    scaler = StandardScaler()
+    normalized_embeddings = scaler.fit_transform(data_reshaped)
+
+    # Apply PCA to reduce the dimensionality to 50
+    pca = PCA(n_components=50, random_state=42)
+    data_pca = pca.fit_transform(normalized_embeddings)
+
+    # Apply KMeans to cluster the data into 5 clusters
+    kmeans = KMeans(n_clusters=5, random_state=42)
+    clusters = kmeans.fit_predict(data_pca)
+
+    # Apply TSNE to reduce the dimensionality to 2 for visualization
+    tsne_results = TSNE(
+        n_components=2, random_state=42, learning_rate="auto", init="random"
+    ).fit_transform(data_pca)
+
+    # Visualize the clusters using a scatter plot
+    plt.figure(figsize=(10, 8))
+    scatter = plt.scatter(
+        tsne_results[:, 0], tsne_results[:, 1], c=clusters, s=5, cmap="rainbow"
+    )
+    plt.title("t-SNE visualization of YAMNet embeddings after KMeans clustering")
+    plt.xlabel("t-SNE 1")
+    plt.ylabel("t-SNE 2")
+    plt.colorbar(scatter)  # Show color scale
+    plt.savefig(os.path.join(output_dir, "tsne_clusters.png"))
+
+    filename_cluster_map = {
+        filename: cluster for filename, cluster in zip(filenames, clusters)
+    }
+
+    return filename_cluster_map
 
 
 def normalize_columns(data, columns):
@@ -16,7 +74,7 @@ def normalize_columns(data, columns):
     return data
 
 
-def process_dataset(df, data_dir, dataset_name):
+def process_dataset(df, data_dir, dataset_name, output_dir):
     df.columns = map(str.lower, df.columns)
 
     # Remove records that do not have a corresponding file in the data directory
@@ -53,8 +111,10 @@ def process_dataset(df, data_dir, dataset_name):
         & ((df["withone"] == 1) | (df["withgroup"] == 1) | (df["phone"] == 1))
     ).astype(int)
 
+    filename_cluster_map = create_domains(df, output_dir)
     # Add a new column to the dataset to indicate the dataset name
-    df["dataset"] = dataset_name
+    df["dataset"] = df["filename"].map(filename_cluster_map)
+    df["dataset"] = dataset_name + "_" + df["dataset"].astype(str)
 
     # Update the participant_id with the dataset name as prefix
     df["participant_id"] = dataset_name + "_" + df["participant_id"].astype(str)
@@ -109,8 +169,8 @@ def main(args):
     gt_aging = pd.read_csv(args.gt_aging)
 
     # Process the dataset
-    df_dse = process_dataset(gt_dse, args.features_dse, "dse")
-    df_aging = process_dataset(gt_aging, args.features_aging, "aging")
+    df_dse = process_dataset(gt_dse, args.features_dse, "dse", args.output_dir)
+    df_aging = process_dataset(gt_aging, args.features_aging, "aging", args.output_dir)
 
     # Merge the datasets
     df = merge_datasets([df_dse, df_aging])
