@@ -94,7 +94,7 @@ class ExpertModel(nn.Module):
         x = self.pool(x)
         x = F.relu(self.conv2(x))
         x1 = self.pool(x)
-        # x1 = self.shared_norm(x1)
+        x1 = self.shared_norm(x1)
         x = x1.view(x1.size(0), -1)
         x = self.fc(x)
         return x, x1
