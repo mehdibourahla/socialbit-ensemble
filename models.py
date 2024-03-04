@@ -134,39 +134,48 @@ class MasterModel(StandardModel):
 
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
         representations = torch.zeros(x.size(0), 64, 3, device=x.device)
+
         if signature_matrix is not None:  # Inference mode
             expert_idx = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
             similarities = torch.empty(x.size(0), self.num_experts, device=x.device)
 
-            # Ensure the signature matrix is flattened [num_experts, 64*3]
             flattened_signature_matrix = signature_matrix.view(self.num_experts, -1)
 
             for i in range(self.num_experts):
-                # Flatten the representations for the current expert [batch, 64*3]
                 flattened_representations = expert_representations[:, i, :, :].reshape(
                     -1, 64 * 3
                 )
-
-                # Calculate cosine similarity for each input with the current expert's signature
-                # Note: No need to expand the signature since we're comparing each batch element to the same signature
-                sim = F.cosine_similarity(
-                    flattened_representations,
-                    flattened_signature_matrix[i].unsqueeze(0),
-                    dim=1,
+                # Compute Pearson correlation coefficient
+                mean_centered_representations = (
+                    flattened_representations
+                    - flattened_representations.mean(dim=1, keepdim=True)
+                )
+                mean_centered_signature = (
+                    flattened_signature_matrix[i] - flattened_signature_matrix[i].mean()
+                )
+                sim = (mean_centered_representations * mean_centered_signature).sum(
+                    dim=1
+                ) / (
+                    torch.sqrt((mean_centered_representations**2).sum(dim=1))
+                    * torch.sqrt((mean_centered_signature**2).sum())
                 )
                 similarities[:, i] = sim
 
-            # Since higher similarity indicates closer match, use argmax to find the closest expert
-            closest_experts = torch.argmax(similarities, dim=1)
+            # Normalize similarities to get weights
+            similarity_weights = F.softmax(similarities, dim=1)
 
             for sample in range(x.size(0)):
-                final_output[sample, :] = expert_outputs[
-                    sample, closest_experts[sample], :
-                ]
-                representations[sample, :, :] = expert_representations[
-                    sample, closest_experts[sample], :, :
-                ]
-                expert_idx[sample] = closest_experts[sample]
+                for i in range(self.num_experts):
+                    final_output[sample, :] += (
+                        similarity_weights[sample, i] * expert_outputs[sample, i, :]
+                    )
+                    representations[sample, :, :] += (
+                        similarity_weights[sample, i]
+                        * expert_representations[sample, i, :, :]
+                    )
+                    expert_idx[sample] = torch.argmax(
+                        similarity_weights[sample, :]
+                    )  # Optional: for tracking
 
         else:  # Training mode
             for sample in range(x.size(0)):
