@@ -58,6 +58,7 @@ def train_and_evaluate_model(
     epochs = args.epochs
     output_dir = args.output_dir
     use_metadata = args.metadata
+    alpha = float(args.alpha / 10)
     (
         signature_matrix,
         signature_matrix_over_epochs,
@@ -66,7 +67,13 @@ def train_and_evaluate_model(
         train_accuracies,
         val_accuracies,
     ) = model.train_model(
-        train_gen, val_gen, device, output_dir, epochs=epochs, use_metadata=use_metadata
+        train_gen,
+        val_gen,
+        device,
+        output_dir,
+        epochs=epochs,
+        use_metadata=use_metadata,
+        alpha=alpha,
     )
     # Save the model and signature matrix
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
@@ -135,7 +142,10 @@ def main(args):
     setup_directories(args.output_dir)
 
     current_output_dir = os.path.join(
-        args.output_dir, f"fold_{args.i_fold + 1}", f"subfold_{args.j_subfold + 1}"
+        args.output_dir,
+        f"alpha_{args.alpha}",
+        f"fold_{args.i_fold + 1}",
+        f"subfold_{args.j_subfold + 1}",
     )
     setup_directories(current_output_dir)
     setup_logging(current_output_dir)
@@ -205,6 +215,7 @@ def initialize_args(parser):
 
     parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
     parser.add_argument("--metadata", action="store_true", help="Use metadata")
+    parser.add_argument("--alpha", type=float, default=5, help="Alpha for the loss")
 
 
 if __name__ == "__main__":

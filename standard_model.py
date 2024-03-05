@@ -101,15 +101,14 @@ class StandardModel(nn.Module):
         output_dir,
         epochs=10,
         use_metadata=False,
+        alpha=0.5,
     ):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
         signature_matrix = torch.zeros(self.num_experts, 64 * 3, device=device)
 
-        # TODO: Transform these into hyperparameters
-        alpha = 1
-        beta = 1
+        beta = 1 - alpha
 
         train_losses = []
         val_losses = []
