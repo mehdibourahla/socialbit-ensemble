@@ -28,7 +28,7 @@ def load_features(dataframe):
     return filenames, np.stack(features)
 
 
-def create_domains(dataframe, output_dir):
+def create_domains(dataframe, output_dir, dataset_name, num_clusters):
     filenames, data = load_features(dataframe)
     data_reshaped = data.reshape(-1, 1024 * 30)
 
@@ -41,7 +41,7 @@ def create_domains(dataframe, output_dir):
     data_pca = pca.fit_transform(normalized_embeddings)
 
     # Apply KMeans to cluster the data into 5 clusters
-    kmeans = KMeans(n_clusters=5, random_state=42)
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
     clusters = kmeans.fit_predict(data_pca)
 
     # Apply TSNE to reduce the dimensionality to 2 for visualization
@@ -58,7 +58,7 @@ def create_domains(dataframe, output_dir):
     plt.xlabel("t-SNE 1")
     plt.ylabel("t-SNE 2")
     plt.colorbar(scatter)  # Show color scale
-    plt.savefig(os.path.join(output_dir, "tsne_clusters.png"))
+    plt.savefig(os.path.join(output_dir, f"tsne_clusters_{dataset_name}.png"))
 
     filename_cluster_map = {
         filename: cluster for filename, cluster in zip(filenames, clusters)
@@ -74,7 +74,11 @@ def normalize_columns(data, columns):
     return data
 
 
-def process_dataset(df, data_dir, dataset_name, output_dir):
+def process_dataset(df, args, dataset_name):
+    data_dir = args.features_dse if dataset_name == "dse" else args.features_aging
+    output_dir = args.output_dir
+    num_clusters = args.num_clusters
+
     df.columns = map(str.lower, df.columns)
 
     # Remove records that do not have a corresponding file in the data directory
@@ -111,7 +115,7 @@ def process_dataset(df, data_dir, dataset_name, output_dir):
         & ((df["withone"] == 1) | (df["withgroup"] == 1) | (df["phone"] == 1))
     ).astype(int)
 
-    filename_cluster_map = create_domains(df, output_dir)
+    filename_cluster_map = create_domains(df, output_dir, dataset_name, num_clusters)
     # Add a new column to the dataset to indicate the dataset name
     df["dataset"] = df["filename"].map(filename_cluster_map)
     df["dataset"] = dataset_name + "_" + df["dataset"].astype(str)
@@ -163,14 +167,15 @@ def split_dataset(df, test_size=0.3, random_state=42):
 
 
 def main(args):
+    args.output_dir = f"{args.output_dir}_{args.num_clusters}"
     os.makedirs(args.output_dir, exist_ok=True)
     # Load the ground truth dataset
     gt_dse = pd.read_csv(args.gt_dse)
     gt_aging = pd.read_csv(args.gt_aging)
 
     # Process the dataset
-    df_dse = process_dataset(gt_dse, args.features_dse, "dse", args.output_dir)
-    df_aging = process_dataset(gt_aging, args.features_aging, "aging", args.output_dir)
+    df_dse = process_dataset(gt_dse, args, "dse")
+    df_aging = process_dataset(gt_aging, args, "aging")
 
     # Merge the datasets
     df = merge_datasets([df_dse, df_aging])
@@ -196,7 +201,9 @@ def main(args):
 
 
 def initialize_args(parser):
-    # Input paths
+    parser.add_argument(
+        "--num_clusters", default=2, type=int, help="Number of clusters for KMeans"
+    )
     parser.add_argument(
         "--features_dse",
         required=True,
