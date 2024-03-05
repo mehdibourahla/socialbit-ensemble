@@ -195,9 +195,7 @@ class StandardModel(nn.Module):
 
             for idx in range(self.num_experts):
                 signature_matrix[idx] = torch.from_numpy(
-                    representative_cluster(
-                        representations_for_clustering[idx].cpu().numpy()
-                    )
+                    representative_cluster(representations_for_clustering[idx])
                 ).to(device)
 
             if use_metadata:
