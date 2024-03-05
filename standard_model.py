@@ -4,6 +4,8 @@ import logging
 from early_stopping import EarlyStopping
 import torch.nn.functional as F
 import random
+from utils import representative_cluster
+import numpy as np
 
 
 class StandardModel(nn.Module):
@@ -77,9 +79,9 @@ class StandardModel(nn.Module):
                 triplet_loss = F.relu(pos_dist - neg_dist + margin)
             else:
                 triplet_loss = F.relu(pos_dist + margin)
-                print(
-                    "Warning: Negative example not found. This may be due to insufficient domain variety in the batch."
-                )
+                # print(
+                #     "Warning: Negative example not found. This may be due to insufficient domain variety in the batch."
+                # )
                 continue
             valid_triplets += 1
             loss += triplet_loss.mean()
@@ -103,7 +105,7 @@ class StandardModel(nn.Module):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
-        signature_matrix = torch.zeros(self.num_experts, 64, 3, device=device)
+        signature_matrix = torch.zeros(self.num_experts, 64 * 3, device=device)
 
         # TODO: Transform these into hyperparameters
         alpha = 1
@@ -114,13 +116,14 @@ class StandardModel(nn.Module):
         train_accuracies = []
         val_accuracies = []
         meta_over_epochs = []
+
         for epoch in range(epochs):
             total_loss = 0
             correct = 0
             total = 0
 
-            signature_sums = torch.zeros_like(signature_matrix)
-            counts = torch.zeros(self.num_experts, dtype=torch.long, device=device)
+            representations_for_clustering = [[] for _ in range(self.num_experts)]
+
             # Training phase
             self.train()
             for _, batch_x in enumerate(train_loader_x):
@@ -141,8 +144,12 @@ class StandardModel(nn.Module):
                 for idx in range(self.num_experts):
                     mask = expert_idx_x == idx
                     if mask.any():
-                        signature_sums[idx] += representations_x[mask].mean(dim=0)
-                        counts[idx] += mask.sum()
+                        sampled_representations = representations_x[
+                            mask
+                        ].detach()  # Detach to avoid tracking for gradient updates
+                        representations_for_clustering[idx].append(
+                            sampled_representations
+                        )
 
                 loss_bce_x = bce_loss_fn(
                     final_output_x, labels_x.float()
@@ -168,10 +175,33 @@ class StandardModel(nn.Module):
             logging.info(
                 f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
             )
-            # After the epoch, update the signatures
+            # TODO: Try to not update the signature matrix at every epoch
+            representations_for_clustering = [
+                torch.cat(rep, dim=0).cpu().numpy()
+                for rep in representations_for_clustering
+            ]  # Shape: (num_experts, N, 64, 3)
+
+            # Cut off the number of samples to min N
+            min_N = min([rep.shape[0] for rep in representations_for_clustering])
+            representations_for_clustering = [
+                rep[:min_N] for rep in representations_for_clustering
+            ]
+            representations_for_clustering = np.array(
+                representations_for_clustering, device=device
+            )
+
+            # Flatten the representations
+            representations_for_clustering = representations_for_clustering.reshape(
+                self.num_experts, min_N, 64 * 3
+            )
+
             for idx in range(self.num_experts):
-                if counts[idx] > 0:
-                    signature_matrix[idx] = signature_sums[idx] / counts[idx]
+                signature_matrix[idx] = torch.from_numpy(
+                    representative_cluster(
+                        representations_for_clustering[idx].cpu().numpy()
+                    )
+                ).to(device)
+
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())
             # Validation phase

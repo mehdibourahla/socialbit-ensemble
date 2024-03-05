@@ -5,6 +5,13 @@ import matplotlib.patches as mpatches
 import os
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import pdist, squareform
+
+
+def representative_cluster(X):
+    pairwise_distances = squareform(pdist(X, "euclidean"))
+    medoid_index = np.argmin(pairwise_distances.sum(axis=0))
+    return X[medoid_index]
 
 
 def plot_training_curves(

@@ -139,8 +139,6 @@ class MasterModel(StandardModel):
             expert_idx = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
             similarities = torch.empty(x.size(0), self.num_experts, device=x.device)
 
-            flattened_signature_matrix = signature_matrix.view(self.num_experts, -1)
-
             for i in range(self.num_experts):
                 flattened_representations = expert_representations[:, i, :, :].reshape(
                     -1, 64 * 3
@@ -151,7 +149,7 @@ class MasterModel(StandardModel):
                     - flattened_representations.mean(dim=1, keepdim=True)
                 )
                 mean_centered_signature = (
-                    flattened_signature_matrix[i] - flattened_signature_matrix[i].mean()
+                    signature_matrix[i] - signature_matrix[i].mean()
                 )
                 sim = (mean_centered_representations * mean_centered_signature).sum(
                     dim=1
