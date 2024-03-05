@@ -186,9 +186,7 @@ class StandardModel(nn.Module):
             representations_for_clustering = [
                 rep[:min_N] for rep in representations_for_clustering
             ]
-            representations_for_clustering = np.array(
-                representations_for_clustering, device=device
-            )
+            representations_for_clustering = np.array(representations_for_clustering)
 
             # Flatten the representations
             representations_for_clustering = representations_for_clustering.reshape(
