@@ -137,43 +137,40 @@ class MasterModel(StandardModel):
 
         if signature_matrix is not None:  # Inference mode
             expert_idx = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
-            similarities = torch.empty(x.size(0), self.num_experts, device=x.device)
-
-            for i in range(self.num_experts):
-                flattened_representations = expert_representations[:, i, :, :].reshape(
-                    -1, 64 * 3
-                )
-                # Compute Pearson correlation coefficient
-                mean_centered_representations = (
-                    flattened_representations
-                    - flattened_representations.mean(dim=1, keepdim=True)
-                )
-                mean_centered_signature = (
-                    signature_matrix[i] - signature_matrix[i].mean()
-                )
-                sim = (mean_centered_representations * mean_centered_signature).sum(
-                    dim=1
-                ) / (
-                    torch.sqrt((mean_centered_representations**2).sum(dim=1))
-                    * torch.sqrt((mean_centered_signature**2).sum())
-                )
-                similarities[:, i] = sim
+            similarities = torch.empty(
+                x.size(0), self.num_experts, self.num_experts * 2, device=x.device
+            )
+            flattened_representations = expert_representations.reshape(
+                x.size(0), self.num_experts, 64 * 3
+            )
+            # Compute similarities between each input representation and all expert signatures
+            for sample in range(flattened_representations.size(0)):
+                for signature in range(signature_matrix.size(0)):
+                    for expert in range(self.num_experts):
+                        similarities[sample, expert, signature] = F.cosine_similarity(
+                            flattened_representations[sample, expert, :],
+                            signature_matrix[signature, :],
+                            dim=0,
+                        )
 
             # Normalize similarities to get weights
             similarity_weights = F.softmax(similarities, dim=1)
 
             for sample in range(x.size(0)):
-                for i in range(self.num_experts):
-                    final_output[sample, :] += (
-                        similarity_weights[sample, i] * expert_outputs[sample, i, :]
-                    )
-                    representations[sample, :, :] += (
-                        similarity_weights[sample, i]
-                        * expert_representations[sample, i, :, :]
-                    )
-                    expert_idx[sample] = torch.argmax(
-                        similarity_weights[sample, :]
-                    )  # Optional: for tracking
+                for expert in range(self.num_experts):
+                    for signature in range(self.num_experts * 2):
+                        weighted_output = (
+                            expert_outputs[sample, expert, :]
+                            * similarity_weights[sample, expert, signature]
+                        )
+                        final_output[sample, :] += weighted_output
+                        representations[sample, :, :] += (
+                            expert_representations[sample, expert, :, :]
+                            * similarity_weights[sample, expert, signature]
+                        )
+                        expert_idx[sample] = torch.argmax(
+                            similarity_weights[sample, expert, :]
+                        )
 
         else:  # Training mode
             for sample in range(x.size(0)):

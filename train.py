@@ -130,12 +130,15 @@ def evaluate_and_save_results(
 
 
 # List of hyperparameters/variants to try
-# 1. Undersampling vs. class weights
-# 2. Different architectures (Baseline, MasterModel with and without skip connection)
-# 3. Different number of experts
-# 4. Alpha, beta, gamma for the loss function
-# 5. Different learning rates
-# 6. The definition of Social Interaction
+# 1. The way that I am splitting the data into domains
+#   - Currently, I am using KMeans to split the data into 8 domains
+# 2. The distance metric used in Triplet loss
+#   - Currently, I am using cosine distance
+# 3. The distance metric used to compare the signature matrix and the input data
+#   - Currently, I am using Pearson correlation
+# 4. The way that I constructing the signature matrix
+#   - Currently, I am using the medoid of each expert representation as the signature
+#   - This uses Eucledian distance to find the medoid
 
 
 def main(args):
@@ -143,7 +146,6 @@ def main(args):
 
     current_output_dir = os.path.join(
         args.output_dir,
-        f"alpha_{args.alpha}",
         f"fold_{args.i_fold + 1}",
         f"subfold_{args.j_subfold + 1}",
     )
@@ -215,7 +217,7 @@ def initialize_args(parser):
 
     parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
     parser.add_argument("--metadata", action="store_true", help="Use metadata")
-    parser.add_argument("--alpha", type=float, default=5, help="Alpha for the loss")
+    parser.add_argument("--alpha", type=int, default=5, help="Alpha for the loss")
 
 
 if __name__ == "__main__":

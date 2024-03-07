@@ -93,6 +93,20 @@ class StandardModel(nn.Module):
 
         return loss
 
+    def preprocess_representations(self, representations):
+        representations = [
+            torch.cat(rep, dim=0).cpu().numpy() for rep in representations
+        ]  # Shape: (num_experts, N, 64, 3)
+
+        # Cut off the number of samples to min N
+        min_N = min([rep.shape[0] for rep in representations])
+        representations = [rep[:min_N] for rep in representations]
+        representations = np.array(representations)
+
+        # Flatten the representations
+        representations = representations.reshape(self.num_experts, min_N, 64 * 3)
+        return representations
+
     def train_model(
         self,
         train_loader_x,
@@ -106,7 +120,7 @@ class StandardModel(nn.Module):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
-        signature_matrix = torch.zeros(self.num_experts, 64 * 3, device=device)
+        signature_matrix = torch.zeros(self.num_experts * 2, 64 * 3, device=device)
 
         beta = 1 - alpha
 
@@ -121,7 +135,8 @@ class StandardModel(nn.Module):
             correct = 0
             total = 0
 
-            representations_for_clustering = [[] for _ in range(self.num_experts)]
+            pos_representations_for_clustering = [[] for _ in range(self.num_experts)]
+            neg_representations_for_clustering = [[] for _ in range(self.num_experts)]
 
             # Training phase
             self.train()
@@ -138,16 +153,26 @@ class StandardModel(nn.Module):
                     if self.num_experts > 1
                     else self(inputs_x)
                 )
-
+                pos_labels = labels_x[:, 1] > 0.5
+                neg_labels = ~pos_labels
                 # Update signature sums and counts
                 for idx in range(self.num_experts):
-                    mask = expert_idx_x == idx
-                    if mask.any():
-                        sampled_representations = representations_x[
-                            mask
-                        ].detach()  # Detach to avoid tracking for gradient updates
-                        representations_for_clustering[idx].append(
-                            sampled_representations
+                    mask_pos = (expert_idx_x == idx) & pos_labels
+                    mask_neg = (expert_idx_x == idx) & neg_labels
+                    if mask_pos.any():
+                        sampled_pos_representations = representations_x[
+                            mask_pos
+                        ].detach()
+                        pos_representations_for_clustering[idx].append(
+                            sampled_pos_representations
+                        )
+
+                    if mask_neg.any():
+                        sampled_neg_representations = representations_x[
+                            mask_neg
+                        ].detach()
+                        neg_representations_for_clustering[idx].append(
+                            sampled_neg_representations
                         )
 
                 loss_bce_x = bce_loss_fn(
@@ -175,26 +200,19 @@ class StandardModel(nn.Module):
                 f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
             )
             # TODO: Try to not update the signature matrix at every epoch
-            representations_for_clustering = [
-                torch.cat(rep, dim=0).cpu().numpy()
-                for rep in representations_for_clustering
-            ]  # Shape: (num_experts, N, 64, 3)
-
-            # Cut off the number of samples to min N
-            min_N = min([rep.shape[0] for rep in representations_for_clustering])
-            representations_for_clustering = [
-                rep[:min_N] for rep in representations_for_clustering
-            ]
-            representations_for_clustering = np.array(representations_for_clustering)
-
-            # Flatten the representations
-            representations_for_clustering = representations_for_clustering.reshape(
-                self.num_experts, min_N, 64 * 3
+            pos_representations_for_clustering = self.preprocess_representations(
+                pos_representations_for_clustering
+            )
+            neg_representations_for_clustering = self.preprocess_representations(
+                neg_representations_for_clustering
             )
 
             for idx in range(self.num_experts):
                 signature_matrix[idx] = torch.from_numpy(
-                    representative_cluster(representations_for_clustering[idx])
+                    representative_cluster(pos_representations_for_clustering[idx])
+                ).to(device)
+                signature_matrix[idx + self.num_experts] = torch.from_numpy(
+                    representative_cluster(neg_representations_for_clustering[idx])
                 ).to(device)
 
             if use_metadata:
