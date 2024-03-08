@@ -54,7 +54,7 @@ class BiLSTMModel(StandardModel):
         out = self.dropout(out[:, -1, :])  # Take the last time step
         out = self.fc(out)
 
-        return out
+        return out, None, None
 
 
 class SharedFeatureExtractor(nn.Module):

@@ -153,36 +153,41 @@ class StandardModel(nn.Module):
                     if self.num_experts > 1
                     else self(inputs_x)
                 )
-                pos_labels = labels_x[:, 1] > 0.5
-                neg_labels = ~pos_labels
-                # Update signature sums and counts
-                for idx in range(self.num_experts):
-                    mask_pos = (expert_idx_x == idx) & pos_labels
-                    mask_neg = (expert_idx_x == idx) & neg_labels
-                    if mask_pos.any():
-                        sampled_pos_representations = representations_x[
-                            mask_pos
-                        ].detach()
-                        pos_representations_for_clustering[idx].append(
-                            sampled_pos_representations
-                        )
+                if self.num_experts > 1:
+                    pos_labels = labels_x[:, 1] > 0.5
+                    neg_labels = ~pos_labels
+                    # Update signature sums and counts
+                    for idx in range(self.num_experts):
+                        mask_pos = (expert_idx_x == idx) & pos_labels
+                        mask_neg = (expert_idx_x == idx) & neg_labels
+                        if mask_pos.any():
+                            sampled_pos_representations = representations_x[
+                                mask_pos
+                            ].detach()
+                            pos_representations_for_clustering[idx].append(
+                                sampled_pos_representations
+                            )
 
-                    if mask_neg.any():
-                        sampled_neg_representations = representations_x[
-                            mask_neg
-                        ].detach()
-                        neg_representations_for_clustering[idx].append(
-                            sampled_neg_representations
-                        )
+                        if mask_neg.any():
+                            sampled_neg_representations = representations_x[
+                                mask_neg
+                            ].detach()
+                            neg_representations_for_clustering[idx].append(
+                                sampled_neg_representations
+                            )
 
+                    loss_cl_x = self.contrastive_loss(
+                        representations_x, expert_idx_x
+                    )  # Contrastive loss
                 loss_bce_x = bce_loss_fn(
                     final_output_x, labels_x.float()
                 )  # Social Interaction loss
-                loss_cl_x = self.contrastive_loss(
-                    representations_x, expert_idx_x
-                )  # Contrastive loss
 
-                loss_x = alpha * loss_bce_x + beta * loss_cl_x
+                loss_x = (
+                    alpha * loss_bce_x + beta * loss_cl_x
+                    if self.num_experts > 1
+                    else loss_bce_x
+                )
                 loss_x.backward()
                 optimizer.step()
 
@@ -199,21 +204,22 @@ class StandardModel(nn.Module):
             logging.info(
                 f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
             )
-            # TODO: Try to not update the signature matrix at every epoch
-            pos_representations_for_clustering = self.preprocess_representations(
-                pos_representations_for_clustering
-            )
-            neg_representations_for_clustering = self.preprocess_representations(
-                neg_representations_for_clustering
-            )
+            if self.num_experts > 1:
+                # TODO: Try to not update the signature matrix at every epoch
+                pos_representations_for_clustering = self.preprocess_representations(
+                    pos_representations_for_clustering
+                )
+                neg_representations_for_clustering = self.preprocess_representations(
+                    neg_representations_for_clustering
+                )
 
-            for idx in range(self.num_experts):
-                signature_matrix[idx] = torch.from_numpy(
-                    representative_cluster(pos_representations_for_clustering[idx])
-                ).to(device)
-                signature_matrix[idx + self.num_experts] = torch.from_numpy(
-                    representative_cluster(neg_representations_for_clustering[idx])
-                ).to(device)
+                for idx in range(self.num_experts):
+                    signature_matrix[idx] = torch.from_numpy(
+                        representative_cluster(pos_representations_for_clustering[idx])
+                    ).to(device)
+                    signature_matrix[idx + self.num_experts] = torch.from_numpy(
+                        representative_cluster(neg_representations_for_clustering[idx])
+                    ).to(device)
 
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())
@@ -237,9 +243,16 @@ class StandardModel(nn.Module):
                     )
 
                     loss_bce_v = bce_loss_fn(final_output_v, labels_v.float())
-                    loss_cl_v = self.contrastive_loss(representations_v, expert_idx_v)
+                    if self.num_experts > 1:
+                        loss_cl_v = self.contrastive_loss(
+                            representations_v, expert_idx_v
+                        )
 
-                    loss_v = alpha * loss_bce_v + beta * loss_cl_v
+                    loss_v = (
+                        alpha * loss_bce_v + beta * loss_cl_v
+                        if self.num_experts > 1
+                        else loss_bce_v
+                    )
 
                     val_loss += loss_v.item()
                     probs_v = torch.sigmoid(final_output_v)
