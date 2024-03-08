@@ -124,59 +124,56 @@ class MasterModel(StandardModel):
             x.size(0), self.num_experts, self.num_classes, device=x.device
         )
         expert_representations = torch.zeros(
-            x.size(0), self.num_experts, 64, 3, device=x.device
+            x.size(0),
+            self.num_experts,
+            64 * 3,
+            device=x.device,  # Flattened representation
         )
 
+        # Process input through each expert's network
         for i in range(self.num_experts):
             output, representation = self.experts[i](shared_features)
             expert_outputs[:, i, :] = output
-            expert_representations[:, i, :, :] = representation
+            expert_representations[:, i, :] = representation.view(
+                x.size(0), -1
+            )  # Flatten the representation
 
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(x.size(0), 64, 3, device=x.device)
+        representations = torch.zeros(x.size(0), 64 * 3, device=x.device)
 
         if signature_matrix is not None:  # Inference mode
             expert_idx = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
             similarities = torch.empty(
-                x.size(0), self.num_experts, self.num_experts * 2, device=x.device
+                x.size(0), self.num_experts, signature_matrix.size(0), device=x.device
             )
-            flattened_representations = expert_representations.reshape(
-                x.size(0), self.num_experts, 64 * 3
-            )
-            # Compute similarities between each input representation and all expert signatures
-            for sample in range(flattened_representations.size(0)):
-                for signature in range(signature_matrix.size(0)):
-                    for expert in range(self.num_experts):
-                        similarities[sample, expert, signature] = F.cosine_similarity(
-                            flattened_representations[sample, expert, :],
-                            signature_matrix[signature, :],
-                            dim=0,
-                        )
 
-            # Normalize similarities to get weights
-            similarity_weights = F.softmax(similarities, dim=1)
+            for i in range(self.num_experts):
+                rep = expert_representations[:, i, :]
+                for j in range(signature_matrix.size(0)):
+                    signature = signature_matrix[j, :].unsqueeze(0)
+                    similarities[:, i, j] = F.cosine_similarity(rep, signature, dim=1)
 
-            for sample in range(x.size(0)):
-                for expert in range(self.num_experts):
-                    for signature in range(self.num_experts * 2):
-                        weighted_output = (
-                            expert_outputs[sample, expert, :]
-                            * similarity_weights[sample, expert, signature]
-                        )
-                        final_output[sample, :] += weighted_output
-                        representations[sample, :, :] += (
-                            expert_representations[sample, expert, :, :]
-                            * similarity_weights[sample, expert, signature]
-                        )
-                        expert_idx[sample] = torch.argmax(
-                            similarity_weights[sample, expert, :]
-                        )
+            # Normalize the weights for each expert across positive and negative signature
+            similarity_weights = F.softmax(similarities, dim=2)
+            expert_idx = torch.argmax(similarity_weights.sum(dim=2), dim=1)
+
+            for i in range(self.num_experts):
+                for j in range(similarity_weights.size(2)):
+                    weighted_output = expert_outputs[:, i, :] * similarity_weights[
+                        :, i, j
+                    ].unsqueeze(1)
+                    final_output += weighted_output
+                    weighted_rep = expert_representations[:, i, :] * similarity_weights[
+                        :, i, j
+                    ].unsqueeze(1)
+                    representations += weighted_rep
 
         else:  # Training mode
+            # Select the expert output based on the provided expert_idx for each sample
             for sample in range(x.size(0)):
                 final_output[sample, :] = expert_outputs[sample, expert_idx[sample], :]
-                representations[sample, :, :] = expert_representations[
-                    sample, expert_idx[sample], :, :
+                representations[sample, :] = expert_representations[
+                    sample, expert_idx[sample], :
                 ]
 
         return final_output, representations, expert_idx

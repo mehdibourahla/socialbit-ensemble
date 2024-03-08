@@ -9,7 +9,7 @@ from scipy.spatial.distance import pdist, squareform
 
 
 def representative_cluster(X):
-    pairwise_distances = squareform(pdist(X, "euclidean"))
+    pairwise_distances = squareform(pdist(X, "cosine"))
     medoid_index = np.argmin(pairwise_distances.sum(axis=0))
     return X[medoid_index]
 
