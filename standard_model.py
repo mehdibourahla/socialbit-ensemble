@@ -58,7 +58,7 @@ class StandardModel(nn.Module):
         negative_idx = random.choice(different_domain_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, margin=1):
+    def contrastive_loss(self, representations, domains, margin=0.1):
         loss = 0.0
         valid_triplets = 0
         for i in range(representations.size(0)):
@@ -74,9 +74,9 @@ class StandardModel(nn.Module):
                 negative = negative.unsqueeze(0)
                 neg_sim = F.cosine_similarity(anchor, negative)
                 neg_dist = 1 - neg_sim
-
+                # print(f"Distance: {pos_dist - neg_dist}")
                 # Triplet loss calculation with cosine distance
-                triplet_loss = F.relu(pos_dist - neg_dist + margin)
+                triplet_loss = F.relu(abs(pos_dist - neg_dist) + margin)
             else:
                 triplet_loss = F.relu(pos_dist + margin)
                 # print(
@@ -94,17 +94,20 @@ class StandardModel(nn.Module):
         return loss
 
     def preprocess_representations(self, representations):
+        # [print(np.array(rep).shape) for rep in representations]
         representations = [
             torch.cat(rep, dim=0).cpu().numpy() for rep in representations
-        ]  # Shape: (num_experts, N, 64, 3)
+        ]  # Shape: (num_experts, N, 64 * 3)
 
-        # Cut off the number of samples to min N
-        min_N = min([rep.shape[0] for rep in representations])
-        representations = [rep[:min_N] for rep in representations]
-        representations = np.array(representations)
+        # [print(rep.shape) for rep in representations]
+
+        # # Cut off the number of samples to min N
+        # min_N = min([rep.shape[0] for rep in representations])
+        # representations = [rep[:min_N] for rep in representations]
+        # representations = np.array(representations)
 
         # Flatten the representations
-        representations = representations.reshape(self.num_experts, min_N, 64 * 3)
+        # representations = representations.reshape(self.num_experts, min_N, 64 * 3)
         return representations
 
     def train_model(
@@ -213,13 +216,16 @@ class StandardModel(nn.Module):
                     neg_representations_for_clustering
                 )
 
-                for idx in range(self.num_experts):
-                    signature_matrix[idx] = torch.from_numpy(
-                        representative_cluster(pos_representations_for_clustering[idx])
-                    ).to(device)
-                    signature_matrix[idx + self.num_experts] = torch.from_numpy(
-                        representative_cluster(neg_representations_for_clustering[idx])
-                    ).to(device)
+                representations_for_clustering = (
+                    neg_representations_for_clustering
+                    + pos_representations_for_clustering
+                )
+                medoids = representative_cluster(
+                    representations_for_clustering, check=False
+                )
+
+                for idx in range(len(representations_for_clustering)):
+                    signature_matrix[idx] = torch.from_numpy(medoids[idx]).to(device)
 
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())

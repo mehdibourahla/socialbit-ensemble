@@ -6,12 +6,47 @@ import os
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
+import seaborn as sns
 
 
-def representative_cluster(X):
-    pairwise_distances = squareform(pdist(X, "cosine"))
-    medoid_index = np.argmin(pairwise_distances.sum(axis=0))
-    return X[medoid_index]
+def representative_cluster(X, check=False):
+
+    medoids = []
+    for expert in X:
+        pairwise_distances = squareform(pdist(expert, "cosine"))
+        n = pairwise_distances.shape[0]  # Number of points in the current cluster
+
+        # Calculate the sum of distances to points in the same cluster
+        intra_cluster_distances = pairwise_distances.sum(axis=0)
+
+        # Calculate the sum of distances to points in other clusters
+        inter_cluster_distances = np.zeros(n)
+        for other_expert in X:
+            if not np.array_equal(other_expert, expert):
+                for point in expert:
+                    dist_to_other_cluster = np.min(
+                        [
+                            np.linalg.norm(point - other_point)
+                            for other_point in other_expert
+                        ]
+                    )
+                    inter_cluster_distances += dist_to_other_cluster
+
+        # Adjust score to find a balance between intra and inter cluster distances
+        score = intra_cluster_distances - inter_cluster_distances
+        medoid_index = np.argmin(score)
+        medoids.append(expert[medoid_index])
+
+    # Check the distance between medoids
+    if check:
+        pairwise_distances = squareform(pdist(medoids, "cosine"))
+        sns.heatmap(pairwise_distances, annot=True, cmap="viridis", square=True)
+        plt.title("Pairwise Distance Matrix")
+        plt.xlabel("Index")
+        plt.ylabel("Index")
+        plt.show()
+
+    return medoids
 
 
 def plot_training_curves(
