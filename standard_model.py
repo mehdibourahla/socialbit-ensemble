@@ -58,7 +58,7 @@ class StandardModel(nn.Module):
         negative_idx = random.choice(different_domain_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, margin=0.1):
+    def contrastive_loss(self, representations, domains, margin=1):
         loss = 0.0
         valid_triplets = 0
         for i in range(representations.size(0)):
@@ -74,9 +74,9 @@ class StandardModel(nn.Module):
                 negative = negative.unsqueeze(0)
                 neg_sim = F.cosine_similarity(anchor, negative)
                 neg_dist = 1 - neg_sim
-                # print(f"Distance: {pos_dist - neg_dist}")
+
                 # Triplet loss calculation with cosine distance
-                triplet_loss = F.relu(abs(pos_dist - neg_dist) + margin)
+                triplet_loss = F.relu(pos_dist - neg_dist + margin)
             else:
                 triplet_loss = F.relu(pos_dist + margin)
                 # print(
