@@ -7,10 +7,23 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 import seaborn as sns
+import wandb
+
+
+def setup_wandb(args):
+    wandb.login(key=args.wandb_key)
+    config = {
+        "commit_id": args.commit_id,
+        "i_fold": args.i_fold,
+        "j_subfold": args.j_subfold,
+        "num_experts": args.num_experts,
+        "is_baseline": args.baseline,
+    }
+    wandb.init(project="socialbit-ensemble", config=config)
 
 
 def representative_cluster(X, check=False):
-
+    # TODO: Optimize this function, it is slowing down the training process
     medoids = []
     for expert in X:
         pairwise_distances = squareform(pdist(expert, "cosine"))

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import random
 from utils import representative_cluster
 import numpy as np
+import wandb
 
 
 class StandardModel(nn.Module):
@@ -207,6 +208,7 @@ class StandardModel(nn.Module):
             logging.info(
                 f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
             )
+
             if self.num_experts > 1:
                 # TODO: Try to not update the signature matrix at every epoch
                 pos_representations_for_clustering = self.preprocess_representations(
@@ -274,6 +276,15 @@ class StandardModel(nn.Module):
             logging.info(
                 f"End of Epoch {epoch+1}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}"
             )
+            wandb.log(
+                {
+                    "Epoch": epoch + 1,
+                    "Training Loss": total_loss,
+                    "Training Accuracy": train_accuracy,
+                    "Validation Loss": val_loss,
+                    "Validation Accuracy": val_accuracy,
+                }
+            )
             # Save the loss and accuracy for plotting
             train_losses.append(total_loss)
             val_losses.append(val_loss)
@@ -287,6 +298,11 @@ class StandardModel(nn.Module):
                 )
                 logging.info(
                     f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
+                )
+                wandb.log(
+                    {
+                        "Early Stopping": f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
+                    }
                 )
                 # Save the model checkpoint
                 early_stopping.save_checkpoint(
@@ -354,6 +370,13 @@ class StandardModel(nn.Module):
 
         print(
             f"Sensitivity (Recall): {sensitivity:.2f}, Specificity: {specificity:.2f}"
+        )
+        wandb.log(
+            {
+                "Sensitivity": sensitivity,
+                "Specificity": specificity,
+                "Accuracy": accuracy,
+            }
         )
 
         return accuracy, sensitivity, specificity, predictions

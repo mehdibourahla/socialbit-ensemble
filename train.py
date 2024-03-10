@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
+import wandb
 from utils import (
     process_data,
     plot_training_curves,
@@ -15,6 +16,7 @@ from utils import (
     setup_directories,
     setup_logging,
     load_and_prepare_data,
+    setup_wandb,
 )
 
 
@@ -142,6 +144,7 @@ def evaluate_and_save_results(
 
 
 def main(args):
+    setup_wandb(args)
     setup_directories(args.output_dir)
 
     current_output_dir = os.path.join(
@@ -186,9 +189,12 @@ def main(args):
         os.path.join(current_output_dir, "ext_test_results.txt"),
         "ext_test_predictions.csv",
     )
+    wandb.finish()
 
 
 def initialize_args(parser):
+    parser.add_argument("--wandb_key", type=str, help="Wandb API key")
+    parser.add_argument("--commit_id", type=str, help="Commit ID")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument(
         "--num_experts",

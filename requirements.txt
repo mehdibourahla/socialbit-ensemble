@@ -5,3 +5,4 @@ scipy>=1.5.2
 matplotlib>=3.3.2
 scikit-learn
 seaborn
+wandb
