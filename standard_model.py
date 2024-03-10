@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
-import logging
 from early_stopping import EarlyStopping
 import torch.nn.functional as F
 import random
-from utils import representative_cluster
+from utils import representative_cluster, log_message
 import numpy as np
-import wandb
+import time
 
 
 class StandardModel(nn.Module):
@@ -144,6 +143,7 @@ class StandardModel(nn.Module):
 
             # Training phase
             self.train()
+            epoch_start_training = time.time()
             for _, batch_x in enumerate(train_loader_x):
                 _, inputs_x, labels_x, domains_x = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
@@ -202,12 +202,6 @@ class StandardModel(nn.Module):
                 total += labels_x.numel()
             train_accuracy = correct / total
             total_loss /= len(train_loader_x)
-            print(
-                f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
-            )
-            logging.info(
-                f"End of Epoch {epoch+1}, Training Loss: {total_loss:.4f}, Training Accuracy: {train_accuracy:.4f}"
-            )
 
             if self.num_experts > 1:
                 # TODO: Try to not update the signature matrix at every epoch
@@ -231,8 +225,10 @@ class StandardModel(nn.Module):
 
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())
+            epoch_end_training = time.time()
             # Validation phase
             self.eval()  # Set the model to evaluation mode
+            epoch_start_validation = time.time()
             val_loss = 0
             val_correct = 0
             val_total = 0
@@ -270,19 +266,26 @@ class StandardModel(nn.Module):
 
             val_accuracy = val_correct / val_total
             val_loss /= len(validation_loader)
-            print(
-                f"End of Epoch {epoch+1}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}"
-            )
-            logging.info(
-                f"End of Epoch {epoch+1}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}"
-            )
-            wandb.log(
+            epoch_end_validation = time.time()
+            log_message(
                 {
                     "Epoch": epoch + 1,
                     "Training Loss": total_loss,
                     "Training Accuracy": train_accuracy,
                     "Validation Loss": val_loss,
                     "Validation Accuracy": val_accuracy,
+                    "Training start": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(epoch_start_training)
+                    ),
+                    "Training end": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(epoch_end_training)
+                    ),
+                    "Validation start": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(epoch_start_validation)
+                    ),
+                    "Validation end": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(epoch_end_validation)
+                    ),
                 }
             )
             # Save the loss and accuracy for plotting
@@ -293,13 +296,8 @@ class StandardModel(nn.Module):
 
             # Early stopping
             if early_stopping.early_stop(val_loss):
-                print(
-                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
-                )
-                logging.info(
-                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
-                )
-                wandb.log(
+
+                log_message(
                     {
                         "Early Stopping": f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
                     }
@@ -368,10 +366,7 @@ class StandardModel(nn.Module):
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = (TP + TN) / (TP + TN + FP + FN)
 
-        print(
-            f"Sensitivity (Recall): {sensitivity:.2f}, Specificity: {specificity:.2f}"
-        )
-        wandb.log(
+        log_message(
             {
                 "Sensitivity": sensitivity,
                 "Specificity": specificity,

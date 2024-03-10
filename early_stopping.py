@@ -1,4 +1,3 @@
-import logging
 import torch
 
 
@@ -35,9 +34,6 @@ class EarlyStopping:
         :param filename: Filename for the saved model checkpoint (optional)
         """
         if val_loss < self.min_validation_loss:
-            logging.info(
-                f"Validation loss decreased ({self.min_validation_loss:.6f} --> {val_loss:.6f}). Saving model to {filename}..."
-            )
             torch.save(model.state_dict(), filename)
             self.min_validation_loss = val_loss
             self.best_model = model

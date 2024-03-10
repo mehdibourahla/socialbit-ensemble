@@ -14,7 +14,6 @@ from utils import (
     plot_tsne_by_domain_epoch,
     plot_tsne_by_label_epoch,
     setup_directories,
-    setup_logging,
     load_and_prepare_data,
     setup_wandb,
 )
@@ -153,7 +152,6 @@ def main(args):
         f"subfold_{args.j_subfold + 1}",
     )
     setup_directories(current_output_dir)
-    setup_logging(current_output_dir)
 
     training_fold, validation_fold, test_fold = load_and_prepare_data(
         args.data_dir, args.i_fold, args.j_subfold

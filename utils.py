@@ -1,13 +1,21 @@
 from sklearn.manifold import TSNE
-import logging
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import os
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
+from scipy.spatial import cKDTree
 import seaborn as sns
 import wandb
+
+
+def log_message(message):
+    for key, value in message.items():
+        print(f"{key}: {value}")
+    print("\n")
+    if wandb.run is not None:
+        wandb.log(message)
 
 
 def setup_wandb(args):
@@ -23,36 +31,33 @@ def setup_wandb(args):
 
 
 def representative_cluster(X, check=False):
-    # TODO: Optimize this function, it is slowing down the training process
     medoids = []
-    for expert in X:
-        pairwise_distances = squareform(pdist(expert, "cosine"))
-        n = pairwise_distances.shape[0]  # Number of points in the current cluster
 
-        # Calculate the sum of distances to points in the same cluster
+    for expert_index, expert in enumerate(X):
+        # Compute intra-cluster distances once
+        pairwise_distances = squareform(pdist(expert, "cosine"))
         intra_cluster_distances = pairwise_distances.sum(axis=0)
 
-        # Calculate the sum of distances to points in other clusters
-        inter_cluster_distances = np.zeros(n)
-        for other_expert in X:
-            if not np.array_equal(other_expert, expert):
-                for point in expert:
-                    dist_to_other_cluster = np.min(
-                        [
-                            np.linalg.norm(point - other_point)
-                            for other_point in other_expert
-                        ]
-                    )
-                    inter_cluster_distances += dist_to_other_cluster
+        # Initialize inter-cluster distances
+        inter_cluster_distances = np.zeros(pairwise_distances.shape[0])
 
-        # Adjust score to find a balance between intra and inter cluster distances
+        # Use KDTree for efficient distance calculation
+        expert_tree = cKDTree(expert)
+
+        for other_index, other_expert in enumerate(X):
+            if other_index != expert_index:
+                # Using KDTree query to find the minimum distance to points in the other cluster
+                dist, _ = expert_tree.query(other_expert, k=1)
+                inter_cluster_distances += dist.sum()
+
+        # Adjust score
         score = intra_cluster_distances - inter_cluster_distances
         medoid_index = np.argmin(score)
         medoids.append(expert[medoid_index])
 
-    # Check the distance between medoids
+    # Optional: Check the distance between medoids
     if check:
-        pairwise_distances = squareform(pdist(medoids, "cosine"))
+        pairwise_distances = squareform(pdist(np.array(medoids), "cosine"))
         sns.heatmap(pairwise_distances, annot=True, cmap="viridis", square=True)
         plt.title("Pairwise Distance Matrix")
         plt.xlabel("Index")
@@ -234,20 +239,6 @@ def plot_tsne_by_label_epoch(
     plt.xlabel("t-SNE axis 1")
     plt.ylabel("t-SNE axis 2")
     plt.savefig(output_path)
-
-
-def setup_logging(output_dir):
-    log_format = "%(asctime)s - %(levelname)s - %(message)s"
-    logging.basicConfig(
-        level=logging.INFO,
-        format=log_format,
-        handlers=[
-            logging.FileHandler(f"{output_dir}/training.log"),
-            logging.StreamHandler(),
-        ],
-    )
-
-    logging.info("Logger is configured.")
 
 
 def load_csv_files(directory_path):
