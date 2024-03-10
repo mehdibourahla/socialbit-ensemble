@@ -152,7 +152,7 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs_x = inputs_x.transpose(1, 2)
 
-                final_output_x, representations_x, expert_idx_x = (
+                final_output_x, representations_x, expert_idx_x, _ = (
                     self(inputs_x, domains_x)
                     if self.num_experts > 1
                     else self(inputs_x)
@@ -212,16 +212,26 @@ class StandardModel(nn.Module):
                     neg_representations_for_clustering
                 )
 
-                representations_for_clustering = (
-                    neg_representations_for_clustering
-                    + pos_representations_for_clustering
-                )
-                medoids = representative_cluster(
-                    representations_for_clustering, check=False
-                )
+                # Compute medoids separately for positive and negative representations
+                pos_medoids = [
+                    representative_cluster([rep], check=False)[0]
+                    for rep in pos_representations_for_clustering
+                ]
+                neg_medoids = [
+                    representative_cluster([rep], check=False)[0]
+                    for rep in neg_representations_for_clustering
+                ]
 
-                for idx in range(len(representations_for_clustering)):
-                    signature_matrix[idx] = torch.from_numpy(medoids[idx]).to(device)
+                # Update the signature matrix with separate embeddings for positive and negative samples
+                for idx in range(self.num_experts):
+                    signature_matrix[idx * 2] = torch.from_numpy(pos_medoids[idx]).to(
+                        device
+                    )  # Positive
+                    signature_matrix[idx * 2 + 1] = torch.from_numpy(
+                        neg_medoids[idx]
+                    ).to(
+                        device
+                    )  # Negative
 
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())
@@ -232,6 +242,8 @@ class StandardModel(nn.Module):
             val_loss = 0
             val_correct = 0
             val_total = 0
+            expert_selection_counts = [0] * self.num_experts
+            expert_correct_counts = [0] * self.num_experts
             with torch.no_grad():  # No gradient calculation for validation
                 for i, batch in enumerate(validation_loader):
                     _, inputs_v, labels_v, _ = batch
@@ -240,11 +252,21 @@ class StandardModel(nn.Module):
                     if self.transpose_input:
                         inputs_v = inputs_v.transpose(1, 2)
 
-                    final_output_v, representations_v, expert_idx_v = (
+                    final_output_v, representations_v, expert_idx_v, expert_output_v = (
                         self(inputs_v, signature_matrix=signature_matrix)
                         if self.num_experts > 1
                         else self(inputs_v)
                     )
+                    # Update expert selection counts
+                    for expert_idx in expert_idx_v.tolist():
+                        expert_selection_counts[expert_idx] += 1
+
+                        # Compute accuracy for each expert
+                        expert_output = expert_output_v[:, expert_idx, :]
+                        expert_probs = torch.sigmoid(expert_output)
+                        expert_preds = (expert_probs > 0.5).float()
+                        expert_correct = (expert_preds == labels_v).float().sum().item()
+                        expert_correct_counts[expert_idx] += expert_correct
 
                     loss_bce_v = bce_loss_fn(final_output_v, labels_v.float())
                     if self.num_experts > 1:
@@ -267,13 +289,27 @@ class StandardModel(nn.Module):
             val_accuracy = val_correct / val_total
             val_loss /= len(validation_loader)
             epoch_end_validation = time.time()
-            log_message(
+            total_samples = sum(expert_selection_counts)
+            for i, count in enumerate(expert_selection_counts):
+                count = expert_selection_counts[i]
+                correct = expert_correct_counts[i]
+                accuracy = correct / count if count > 0 else 0
+
+                log_message(
+                    {
+                        f"Expert {i+1}": {
+                            "Selections": count,
+                            "Selection Ratio": count / total_samples,
+                            "Accuracy": accuracy,
+                        }
+                    }
+                )
+            training_time = epoch_end_training - epoch_start_training
+            validation_time = epoch_end_validation - epoch_start_validation
+
+            print(
                 {
                     "Epoch": epoch + 1,
-                    "Training Loss": total_loss,
-                    "Training Accuracy": train_accuracy,
-                    "Validation Loss": val_loss,
-                    "Validation Accuracy": val_accuracy,
                     "Training start": time.strftime(
                         "%Y-%m-%d %H:%M:%S", time.localtime(epoch_start_training)
                     ),
@@ -286,6 +322,17 @@ class StandardModel(nn.Module):
                     "Validation end": time.strftime(
                         "%Y-%m-%d %H:%M:%S", time.localtime(epoch_end_validation)
                     ),
+                }
+            )
+            log_message(
+                {
+                    "Epoch": epoch + 1,
+                    "Training Loss": total_loss,
+                    "Training Accuracy": train_accuracy,
+                    "Validation Loss": val_loss,
+                    "Validation Accuracy": val_accuracy,
+                    "Training Time": training_time,
+                    "Validation Time": validation_time,
                 }
             )
             # Save the loss and accuracy for plotting
@@ -331,11 +378,7 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs = inputs.transpose(1, 2)
 
-                (
-                    outputs,
-                    _,
-                    _,
-                ) = (
+                (outputs, _, _, _) = (
                     self(inputs, signature_matrix=signature_matrix)
                     if self.num_experts > 1
                     else self(inputs)

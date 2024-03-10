@@ -154,19 +154,20 @@ class MasterModel(StandardModel):
                     similarities[:, i, j] = F.cosine_similarity(rep, signature, dim=1)
 
             # Normalize the weights for each expert across positive and negative signature
-            similarity_weights = F.softmax(similarities, dim=2)
+            similarity_weights = F.softmax(similarities, dim=1)
             expert_idx = torch.argmax(similarity_weights.sum(dim=2), dim=1)
+            similarity_weights = F.softmax(similarity_weights.sum(dim=2), dim=1)
+            # print(similarities.sum(dim=2))
 
             for i in range(self.num_experts):
-                for j in range(similarity_weights.size(2)):
-                    weighted_output = expert_outputs[:, i, :] * similarity_weights[
-                        :, i, j
-                    ].unsqueeze(1)
-                    final_output += weighted_output
-                    weighted_rep = expert_representations[:, i, :] * similarity_weights[
-                        :, i, j
-                    ].unsqueeze(1)
-                    representations += weighted_rep
+                weighted_output = expert_outputs[:, i, :] * similarity_weights[
+                    :, i
+                ].unsqueeze(1)
+                final_output += weighted_output
+                weighted_rep = expert_representations[:, i, :] * similarity_weights[
+                    :, i
+                ].unsqueeze(1)
+                representations += weighted_rep
 
         else:  # Training mode
             # Select the expert output based on the provided expert_idx for each sample
@@ -176,4 +177,4 @@ class MasterModel(StandardModel):
                     sample, expert_idx[sample], :
                 ]
 
-        return final_output, representations, expert_idx
+        return final_output, representations, expert_idx, expert_outputs

@@ -11,9 +11,6 @@ import wandb
 
 
 def log_message(message):
-    for key, value in message.items():
-        print(f"{key}: {value}")
-    print("\n")
     if wandb.run is not None:
         wandb.log(message)
 
