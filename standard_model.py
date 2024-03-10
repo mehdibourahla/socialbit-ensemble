@@ -58,7 +58,7 @@ class StandardModel(nn.Module):
         negative_idx = random.choice(different_domain_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, margin=1):
+    def contrastive_loss(self, representations, domains, margin=0.3):
         loss = 0.0
         valid_triplets = 0
         for i in range(representations.size(0)):
