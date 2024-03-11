@@ -154,15 +154,22 @@ class MasterModel(StandardModel):
         # Weighted sum of outputs and representations
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
         representations = torch.zeros(x.size(0), 64 * 3, device=x.device)
-        for i in range(self.num_experts):
-            weighted_output = expert_outputs[:, i, :] * similarity_weights[
-                :, i
-            ].unsqueeze(1)
-            final_output += weighted_output
-            weighted_rep = expert_representations[:, i, :] * similarity_weights[
-                :, i
-            ].unsqueeze(1)
-            representations += weighted_rep
+        if inference_mode:
+            for i in range(self.num_experts):
+                weighted_output = expert_outputs[:, i, :] * similarity_weights[
+                    :, i
+                ].unsqueeze(1)
+                final_output += weighted_output
+                weighted_rep = expert_representations[:, i, :] * similarity_weights[
+                    :, i
+                ].unsqueeze(1)
+                representations += weighted_rep
+        else:
+            for sample in range(x.size(0)):
+                final_output[sample, :] = expert_outputs[sample, expert_idx[sample], :]
+                representations[sample, :] = expert_representations[
+                    sample, expert_idx[sample], :
+                ]
 
         return (
             final_output,
