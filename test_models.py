@@ -6,77 +6,75 @@ import torch
 from torch.utils.data import DataLoader
 from train import evaluate_and_save_results
 import argparse
+import wandb
 
 
-def initialize_model(skip_connection, model_file):
+def initialize_model(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MasterModel(
-        num_experts=2,
-        skip_connection=skip_connection,
+        num_experts=args.num_experts,
     ).to(device)
-    model.load_state_dict(torch.load(model_file, map_location=device))
-    return model, device
+    signature_matrix = torch.load(args.signature_matrix, map_location=device)
+    model.load_state_dict(torch.load(args.model_file, map_location=device))
+    return model, signature_matrix, device
 
 
-def test_models(
-    base_output_dir, ext_test_data_dir, skip_connection, num_folds=5, num_subfolds=5
-):
-    ext_test_df = pd.read_csv(os.path.join(ext_test_data_dir, "metadata.csv"))
-    ext_test_gen = DataLoader(
-        YAMNetFeaturesDatasetDavid(ext_test_df, ext_test_data_dir, domain=1),
-        batch_size=32,
-        shuffle=False,
+def test_models(model, signature_matrix, device, args):
+    # Load CSV file
+    test_df = pd.read_csv(os.path.join(args.ground_truth, "test.csv"))
+
+    results = evaluate_and_save_results(
+        model,
+        ext_test_gen,
+        signature_matrix,
+        device,
+        os.path.join(args.output_dir, "ext_test_results.txt"),
+        "ext_test_predictions.csv",
     )
-    for i_fold in range(num_folds):
-        for j_subfold in range(num_subfolds):
-            # Construct the path to the model.pth file
-            model_file = os.path.join(
-                base_output_dir,
-                f"fold_{i_fold + 1}",
-                f"subfold_{j_subfold + 1}",
-                "model.pth",
-            )
-
-            current_output_dir = os.path.join(
-                base_output_dir, f"fold_{i_fold + 1}", f"subfold_{j_subfold + 1}"
-            )
-
-            # Load the model and test it
-            if os.path.exists(model_file):
-                print(f"Testing model from fold {i_fold + 1}, subfold {j_subfold + 1}")
-                # Load the model and test it
-                model, device = initialize_model(skip_connection, model_file)
-                evaluate_and_save_results(
-                    model,
-                    ext_test_gen,
-                    device,
-                    os.path.join(current_output_dir, "ext_test_results_domain_1.txt"),
-                    "ext_test_predictions_domain_1.csv",
-                )
-            else:
-                print(
-                    f"Model from fold {i_fold + 1}, subfold {j_subfold + 1} not found"
-                )
+    return results
 
 
 def main(args):
-    test_models(
-        args.output_dir, args.ext_test_data_dir, skip_connection=args.skip_connection
-    )
+    wandb.login(key=args.wandb_key)
+    config = {
+        "commit_id": args.commit_id,
+        "num_experts": args.num_experts,
+    }
+    wandb.init(project="socialbit-ensemble", config=config)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    model, signature_matrix, device = initialize_model(args)
+    results = test_models(model, signature_matrix, device, args)
 
 
 def initialize_args(parser):
+    parser.add_argument("--commit_id", type=str, help="Commit ID")
+    parser.add_argument("--wandb_key", type=str, help="Wandb API key")
+
     parser.add_argument(
         "--output_dir", required=True, help="Path to Output the results"
     )
     parser.add_argument(
-        "--ext_test_data_dir",
+        "--ground_truth",
         required=True,
-        help="Path to the directory containing external test dataset",
+        help="Path to the directory containing test dataset",
     )
 
     parser.add_argument(
-        "--skip_connection", action="store_true", help="Use skip connection"
+        "--model_file",
+        required=True,
+        help="Path to the model file",
+    )
+    parser.add_argument(
+        "--signature_matrix",
+        required=True,
+        help="Path to the signature matrix",
+    )
+    parser.add_argument(
+        "--num_experts",
+        type=int,
+        default=2,
+        help="Number of experts to use in the MasterModel",
     )
 
 

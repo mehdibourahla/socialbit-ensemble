@@ -6,6 +6,7 @@ import random
 from utils import representative_cluster, log_message
 import numpy as np
 import time
+import pandas as pd
 
 
 class StandardModel(nn.Module):
@@ -22,54 +23,54 @@ class StandardModel(nn.Module):
         self.num_experts = num_experts
         self.transpose_input = transpose_input
 
-    def get_positive_example(self, representations, domains, i):
-        """
-        Select a positive example (same domain but different instance) for the anchor.
-        """
-        anchor_domain = domains[i]
-        same_domain_indices = [
+    def get_positive_example(self, representations, domains, labels, i):
+        anchor_domain = domains[i].item()
+        anchor_label = labels[i].item()
+
+        positive_indices = [
             idx
-            for idx, domain in enumerate(domains)
-            if domain == anchor_domain and idx != i
+            for idx, (domain, label) in enumerate(zip(domains, labels))
+            if (domain.item() == anchor_domain or label.item() == anchor_label)
+            and idx != i
         ]
 
-        if not same_domain_indices:
+        if not positive_indices:
             return representations[i]
 
-        positive_idx = random.choice(same_domain_indices)
+        positive_idx = random.choice(positive_indices)
         return representations[positive_idx]
 
-    def get_negative_example(self, representations, domains, i):
+    def get_negative_example(self, representations, domains, labels, i):
         """
-        Select a negative example (different domain) for the anchor.
+        Select a negative example for the anchor, considering both domain and label.
+        An example is negative if it has a different domain and a different label from the anchor.
         """
-        anchor_domain = domains[i]
-        # Filter indices of a different domain
-        different_domain_indices = [
-            idx for idx, domain in enumerate(domains) if domain != anchor_domain
+        anchor_domain = domains[i].item()
+        anchor_label = labels[i].item()
+        negative_indices = [
+            idx
+            for idx, (domain, label) in enumerate(zip(domains, labels))
+            if domain.item() != anchor_domain and label.item() != anchor_label
         ]
 
-        # Edge case: If no samples from a different domain are present, this is a critical error,
-        # as it suggests the batch does not contain enough domain variety for effective learning.
-        if not different_domain_indices:
-            return None
+        if not negative_indices:
+            return None  # Indicate no suitable negative example was found
 
-        # Randomly select one of the different domain indices
-        negative_idx = random.choice(different_domain_indices)
+        negative_idx = random.choice(negative_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, margin=0.3):
+    def contrastive_loss(self, representations, domains, labels, margin=0.5):
         loss = 0.0
         valid_triplets = 0
         for i in range(representations.size(0)):
             anchor = representations[i].unsqueeze(0)
-            positive = self.get_positive_example(representations, domains, i).unsqueeze(
-                0
-            )
+            positive = self.get_positive_example(
+                representations, domains, labels, i
+            ).unsqueeze(0)
             pos_sim = F.cosine_similarity(anchor, positive)
             pos_dist = 1 - pos_sim
 
-            negative = self.get_negative_example(representations, domains, i)
+            negative = self.get_negative_example(representations, domains, labels, i)
             if negative is not None:
                 negative = negative.unsqueeze(0)
                 neg_sim = F.cosine_similarity(anchor, negative)
@@ -78,36 +79,27 @@ class StandardModel(nn.Module):
                 # Triplet loss calculation with cosine distance
                 triplet_loss = F.relu(pos_dist - neg_dist + margin)
             else:
+                # Handle cases where no suitable negative example is found
                 triplet_loss = F.relu(pos_dist + margin)
-                # print(
-                #     "Warning: Negative example not found. This may be due to insufficient domain variety in the batch."
-                # )
+                # Optionally log or handle this situation as needed
                 continue
+
             valid_triplets += 1
             loss += triplet_loss.mean()
 
         if valid_triplets > 0:
             loss /= valid_triplets
         else:
+            # Create a grad-able zero tensor if no valid triplets are found
             loss = torch.tensor(0.0, requires_grad=True)
 
         return loss
 
     def preprocess_representations(self, representations):
-        # [print(np.array(rep).shape) for rep in representations]
         representations = [
             torch.cat(rep, dim=0).cpu().numpy() for rep in representations
         ]  # Shape: (num_experts, N, 64 * 3)
 
-        # [print(rep.shape) for rep in representations]
-
-        # # Cut off the number of samples to min N
-        # min_N = min([rep.shape[0] for rep in representations])
-        # representations = [rep[:min_N] for rep in representations]
-        # representations = np.array(representations)
-
-        # Flatten the representations
-        # representations = representations.reshape(self.num_experts, min_N, 64 * 3)
         return representations
 
     def train_model(
@@ -123,7 +115,7 @@ class StandardModel(nn.Module):
         bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
-        signature_matrix = torch.zeros(self.num_experts * 2, 64 * 3, device=device)
+        signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
 
         beta = 1 - alpha
 
@@ -151,9 +143,15 @@ class StandardModel(nn.Module):
                 optimizer.zero_grad()
                 if self.transpose_input:
                     inputs_x = inputs_x.transpose(1, 2)
+                # Check if signature matrix is diffenrent than zeros
 
-                final_output_x, representations_x, expert_idx_x, _ = (
-                    self(inputs_x, domains_x)
+                final_output_x, representations_x, expert_idx_x, _, _ = (
+                    self(
+                        inputs_x,
+                        domains_x,
+                        inference_mode=False,
+                        signature_matrix=signature_matrix,
+                    )
                     if self.num_experts > 1
                     else self(inputs_x)
                 )
@@ -181,7 +179,7 @@ class StandardModel(nn.Module):
                             )
 
                     loss_cl_x = self.contrastive_loss(
-                        representations_x, expert_idx_x
+                        representations_x, domains_x, labels_x[:, 1]
                     )  # Contrastive loss
                 loss_bce_x = bce_loss_fn(
                     final_output_x, labels_x.float()
@@ -246,14 +244,24 @@ class StandardModel(nn.Module):
             expert_correct_counts = [0] * self.num_experts
             with torch.no_grad():  # No gradient calculation for validation
                 for i, batch in enumerate(validation_loader):
-                    _, inputs_v, labels_v, _ = batch
+                    _, inputs_v, labels_v, domains_v = batch
                     inputs_v, labels_v = inputs_v.to(device), labels_v.to(device)
 
                     if self.transpose_input:
                         inputs_v = inputs_v.transpose(1, 2)
 
-                    final_output_v, representations_v, expert_idx_v, expert_output_v = (
-                        self(inputs_v, signature_matrix=signature_matrix)
+                    (
+                        final_output_v,
+                        representations_v,
+                        expert_idx_v,
+                        expert_output_v,
+                        _,
+                    ) = (
+                        self(
+                            inputs_v,
+                            inference_mode=True,
+                            signature_matrix=signature_matrix,
+                        )
                         if self.num_experts > 1
                         else self(inputs_v)
                     )
@@ -271,7 +279,7 @@ class StandardModel(nn.Module):
                     loss_bce_v = bce_loss_fn(final_output_v, labels_v.float())
                     if self.num_experts > 1:
                         loss_cl_v = self.contrastive_loss(
-                            representations_v, expert_idx_v
+                            representations_v, domains_v, labels_v[:, 1]
                         )
 
                     loss_v = (
@@ -310,6 +318,10 @@ class StandardModel(nn.Module):
             print(
                 {
                     "Epoch": epoch + 1,
+                    "Training Loss": total_loss,
+                    "Training Accuracy": train_accuracy,
+                    "Validation Loss": val_loss,
+                    "Validation Accuracy": val_accuracy,
                     "Training start": time.strftime(
                         "%Y-%m-%d %H:%M:%S", time.localtime(epoch_start_training)
                     ),
@@ -370,6 +382,9 @@ class StandardModel(nn.Module):
         FP = 0  # False Positives
         FN = 0  # False Negatives
         predictions = []
+        df = []
+        expert_selection_counts = [0] * self.num_experts
+        expert_correct_counts = [0] * self.num_experts
         with torch.no_grad():  # No gradient calculation for evaluation
             for batch in test_loader:
                 filename, inputs, labels, _ = batch
@@ -378,11 +393,21 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs = inputs.transpose(1, 2)
 
-                (outputs, _, _, _) = (
-                    self(inputs, signature_matrix=signature_matrix)
+                (outputs, _, expert_idx, expert_outputs, expert_weights) = (
+                    self(inputs, inference_mode=True, signature_matrix=signature_matrix)
                     if self.num_experts > 1
                     else self(inputs)
                 )
+
+                for idx in expert_idx.tolist():
+                    expert_selection_counts[idx] += 1
+
+                    expert_output = expert_outputs[:, idx, :]
+                    expert_probs = torch.sigmoid(expert_output)
+                    expert_preds = (expert_probs > 0.5).float()
+                    expert_correct = (expert_preds == labels).float().sum().item()
+                    # For each expert, check the misclassification.
+                    expert_correct_counts[idx] += expert_correct
 
                 probs = torch.sigmoid(outputs)
                 for i in range(len(filename)):
@@ -397,18 +422,59 @@ class StandardModel(nn.Module):
                     )
 
                 preds = (probs > 0.5).float()
+                # Get the idx of the misclassified samples
+                misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
+                misclassified_idx = torch.unique(misclassified_idx)
+                for idx in misclassified_idx:
+                    obj = {"filename": filename[idx]}
+                    for i in range(self.num_experts):
+                        expert_preds = torch.sigmoid(expert_outputs[idx, i, :])
+                        expert_weight = expert_weights[idx, i]
+                        obj[f"expert_{i+1}"] = (
+                            expert_preds.cpu().numpy()[1],
+                            expert_weight.cpu().numpy(),
+                        )
+                    obj["true_label"] = labels[idx, 1].cpu().numpy()
+                    obj["prediction"] = probs[idx, 1].cpu().numpy()
+                    df.append(obj)
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels == 1)).float().sum().item()
                 TN += ((preds == 0) & (labels == 0)).float().sum().item()
                 FP += ((preds == 1) & (labels == 0)).float().sum().item()
                 FN += ((preds == 0) & (labels == 1)).float().sum().item()
-
+        df = pd.DataFrame(df)
         # Calculate sensitivity and specificity
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = (TP + TN) / (TP + TN + FP + FN)
 
+        total_samples = sum(expert_selection_counts)
+        for i in range(self.num_experts):
+            count = expert_selection_counts[i]
+            correct = expert_correct_counts[i]
+            accuracy_expert = correct / count if count > 0 else 0
+
+            print(
+                f"Expert {i+1}: Selections: {count}, Selection Ratio: {count / total_samples}, Accuracy: {accuracy_expert}"
+            )
+
+            log_message(
+                {
+                    f"Expert {i+1}": {
+                        "Selections": count,
+                        "Selection Ratio": count / total_samples,
+                        "Accuracy": accuracy_expert,
+                    }
+                }
+            )
+        print(
+            {
+                "Sensitivity": sensitivity,
+                "Specificity": specificity,
+                "Accuracy": accuracy,
+            }
+        )
         log_message(
             {
                 "Sensitivity": sensitivity,
@@ -417,4 +483,4 @@ class StandardModel(nn.Module):
             }
         )
 
-        return accuracy, sensitivity, specificity, predictions
+        return accuracy, sensitivity, specificity, df
