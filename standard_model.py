@@ -375,7 +375,7 @@ class StandardModel(nn.Module):
             val_accuracies,
         )
 
-    def evaluate_model(self, test_loader, signature_matrix, device):
+    def evaluate_model(self, dataset_name, test_loader, signature_matrix, device):
         self.eval()  # Set the model to evaluation mode
         TP = 0  # True Positives
         TN = 0  # True Negatives
@@ -432,7 +432,7 @@ class StandardModel(nn.Module):
                         expert_weight = expert_weights[idx, i]
                         obj[f"expert_{i+1}"] = (
                             expert_preds.cpu().numpy()[1],
-                            expert_weight.cpu().numpy(),
+                            expert_weight.cpu().item(),
                         )
                     obj["true_label"] = labels[idx, 1].cpu().numpy()
                     obj["prediction"] = probs[idx, 1].cpu().numpy()
@@ -458,16 +458,6 @@ class StandardModel(nn.Module):
             print(
                 f"Expert {i+1}: Selections: {count}, Selection Ratio: {count / total_samples}, Accuracy: {accuracy_expert}"
             )
-
-            log_message(
-                {
-                    f"Expert {i+1}": {
-                        "Selections": count,
-                        "Selection Ratio": count / total_samples,
-                        "Accuracy": accuracy_expert,
-                    }
-                }
-            )
         print(
             {
                 "Sensitivity": sensitivity,
@@ -477,9 +467,9 @@ class StandardModel(nn.Module):
         )
         log_message(
             {
-                "Sensitivity": sensitivity,
-                "Specificity": specificity,
-                "Accuracy": accuracy,
+                f"{dataset_name}_Sensitivity": sensitivity,
+                f"{dataset_name}_Specificity": specificity,
+                f"{dataset_name}_Accuracy": accuracy,
             }
         )
 

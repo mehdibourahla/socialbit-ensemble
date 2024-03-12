@@ -9,10 +9,7 @@ import pandas as pd
 import numpy as np
 import wandb
 from utils import (
-    process_data,
     plot_training_curves,
-    plot_tsne_by_domain_epoch,
-    plot_tsne_by_label_epoch,
     setup_directories,
     load_and_prepare_data,
     setup_wandb,
@@ -42,20 +39,27 @@ def initialize_model(args, class_weights):
 
 def get_data_loaders(training_fold, validation_fold, test_fold):
     train_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(training_fold), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(training_fold),
+        batch_size=32,
+        shuffle=True,
+        num_workers=8,
     )
     val_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(validation_fold), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(validation_fold),
+        batch_size=32,
+        shuffle=True,
+        num_workers=8,
     )
     test_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(test_fold), batch_size=32, shuffle=True
+        YAMNetFeaturesDatasetEAR(test_fold),
+        batch_size=32,
+        shuffle=True,
+        num_workers=8,
     )
     return train_gen, val_gen, test_gen
 
 
-def train_and_evaluate_model(
-    model, train_gen, val_gen, test_gen, device, current_output_dir, args
-):
+def train_model(model, train_gen, val_gen, device, current_output_dir, args):
     epochs = args.epochs
     output_dir = args.output_dir
     use_metadata = args.metadata
@@ -82,28 +86,10 @@ def train_and_evaluate_model(
         signature_matrix, os.path.join(current_output_dir, "signature_matrix.pth")
     )
 
-    print("Starting evaluation on test set...")
-    evaluate_and_save_results(
-        model,
-        test_gen,
-        signature_matrix,
-        device,
-        os.path.join(current_output_dir, "test_results.txt"),
-        "test_predictions.csv",
-    )
     plot_training_curves(
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
-    # print("Starting plotting t-SNE...")
-    # tsne_results, domains, labels = process_data(meta_over_epochs)
-    # num_epochs = len(meta_over_epochs)
-    # samples_per_epoch = len(meta_over_epochs[0])
-    # plot_tsne_by_domain_epoch(
-    #     tsne_results, domains, num_epochs, samples_per_epoch, current_output_dir
-    # )
-    # plot_tsne_by_label_epoch(
-    #     tsne_results, labels, num_epochs, samples_per_epoch, current_output_dir
-    # )
+
     return model, signature_matrix, signature_matrix_over_epochs
 
 
@@ -112,34 +98,23 @@ def evaluate_and_save_results(
     data_loader,
     signature_matrix,
     device,
-    results_file_path,
-    predictions_file_name,
+    output_dir,
+    dataset_name,
 ):
+    result_file_path = os.path.join(output_dir, f"{dataset_name}_results.txt")
+    predictions_file_name = os.path.join(output_dir, f"{dataset_name}_predictions.csv")
     test_accuracy, sensitivity, specificity, predictions = model.evaluate_model(
-        data_loader, signature_matrix, device
+        dataset_name, data_loader, signature_matrix, device
     )
-    with open(results_file_path, "w") as f:
+
+    with open(result_file_path, "w") as f:
         f.write(
             f"Test Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
         )
     pd.DataFrame(predictions).to_csv(
-        os.path.join(os.path.dirname(results_file_path), predictions_file_name),
+        predictions_file_name,
         index=False,
     )
-
-    return predictions
-
-
-# List of hyperparameters/variants to try
-# 1. The way that I am splitting the data into domains
-#   - Currently, I am using KMeans to split the data into 8 domains
-# 2. The distance metric used in Triplet loss
-#   - Currently, I am using cosine distance
-# 3. The distance metric used to compare the signature matrix and the input data
-#   - Currently, I am using Pearson correlation
-# 4. The way that I constructing the signature matrix
-#   - Currently, I am using the medoid of each expert representation as the signature
-#   - This uses Eucledian distance to find the medoid
 
 
 def main(args):
@@ -161,14 +136,17 @@ def main(args):
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
-    model, signature_matrix, _ = train_and_evaluate_model(
+    model, signature_matrix, _ = train_model(
         model,
         train_gen,
         val_gen,
-        test_gen,
         device,
         current_output_dir,
         args=args,
+    )
+
+    evaluate_and_save_results(
+        model, test_gen, signature_matrix, device, current_output_dir, "EAR"
     )
 
     # Evaluate on external test data
@@ -177,15 +155,11 @@ def main(args):
         YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir),
         batch_size=32,
         shuffle=False,
+        num_workers=8,
     )
 
     evaluate_and_save_results(
-        model,
-        ext_test_gen,
-        signature_matrix,
-        device,
-        os.path.join(current_output_dir, "ext_test_results.txt"),
-        "ext_test_predictions.csv",
+        model, ext_test_gen, signature_matrix, device, current_output_dir, "LAB"
     )
     wandb.finish()
 
