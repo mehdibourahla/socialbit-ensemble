@@ -426,7 +426,7 @@ class StandardModel(nn.Module):
                 misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
                 misclassified_idx = torch.unique(misclassified_idx)
                 for idx in misclassified_idx:
-                    obj = {"filename": filename[idx]}
+                    obj = {"filename": filename[idx].split("/")[-1]}
                     for i in range(self.num_experts):
                         expert_preds = torch.sigmoid(expert_outputs[idx, i, :])
                         expert_weight = expert_weights[idx, i]
