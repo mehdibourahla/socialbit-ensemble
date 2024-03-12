@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from models import MasterModel
-from data_loader import YAMNetFeaturesDatasetDavid
+from data_loader import YAMNetFeaturesDatasetEAR
 import torch
 from torch.utils.data import DataLoader
 from train import evaluate_and_save_results
@@ -11,25 +11,33 @@ import wandb
 
 def initialize_model(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    signature_matrix_path = os.path.join(args.output_dir, "signature_matrix.pth")
+    model_path = os.path.join(args.output_dir, "model.pth")
     model = MasterModel(
         num_experts=args.num_experts,
     ).to(device)
-    signature_matrix = torch.load(args.signature_matrix, map_location=device)
-    model.load_state_dict(torch.load(args.model_file, map_location=device))
+    signature_matrix = torch.load(signature_matrix_path, map_location=device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
     return model, signature_matrix, device
 
 
 def test_models(model, signature_matrix, device, args):
     # Load CSV file
-    test_df = pd.read_csv(os.path.join(args.ground_truth, "test.csv"))
+    test_df = pd.read_csv(args.ground_truth)
+    test_df["dataset"] = pd.Categorical(test_df["dataset"]).codes
+    test_gen = DataLoader(
+        YAMNetFeaturesDatasetEAR(test_df),
+        batch_size=32,
+        shuffle=False,
+    )
 
     results = evaluate_and_save_results(
         model,
-        ext_test_gen,
+        test_gen,
         signature_matrix,
         device,
-        os.path.join(args.output_dir, "ext_test_results.txt"),
-        "ext_test_predictions.csv",
+        os.path.join(args.output_dir, "test_results.txt"),
+        "test_predictions.csv",
     )
     return results
 
@@ -46,6 +54,12 @@ def main(args):
     model, signature_matrix, device = initialize_model(args)
     results = test_models(model, signature_matrix, device, args)
 
+    # Save results to csv file
+    results.to_csv(os.path.join(args.output_dir, "weights-output.csv"), index=False)
+
+    # Visualize csv file in wandb
+    wandb.save(os.path.join(args.output_dir, "weights-output.csv"))
+
 
 def initialize_args(parser):
     parser.add_argument("--commit_id", type=str, help="Commit ID")
@@ -58,17 +72,6 @@ def initialize_args(parser):
         "--ground_truth",
         required=True,
         help="Path to the directory containing test dataset",
-    )
-
-    parser.add_argument(
-        "--model_file",
-        required=True,
-        help="Path to the model file",
-    )
-    parser.add_argument(
-        "--signature_matrix",
-        required=True,
-        help="Path to the signature matrix",
     )
     parser.add_argument(
         "--num_experts",
