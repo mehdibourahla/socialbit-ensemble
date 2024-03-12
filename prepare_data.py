@@ -111,14 +111,15 @@ def process_dataset(df, args, dataset_name):
     # Records with 'talk' == 1 and 'self' == 0 and ('w/ one person' == 1 or 'w/ multiple people' == 1 or phone == 1)
     df["is_social"] = (
         (df["talk"] == 1)
-        & (df["self"] == 0)
-        & ((df["withone"] == 1) | (df["withgroup"] == 1) | (df["phone"] == 1))
+        # & (df["self"] == 0)
+        # & ((df["withone"] == 1) | (df["withgroup"] == 1) | (df["phone"] == 1))
     ).astype(int)
 
-    filename_cluster_map = create_domains(df, output_dir, dataset_name, num_clusters)
+    # filename_cluster_map = create_domains(df, output_dir, dataset_name, num_clusters)
     # Add a new column to the dataset to indicate the dataset name
-    df["dataset"] = df["filename"].map(filename_cluster_map)
-    df["dataset"] = dataset_name + "_" + df["dataset"].astype(str)
+    # df["dataset"] = df["filename"].map(filename_cluster_map)
+    # df["dataset"] = dataset_name + "_" + df["dataset"].astype(str)
+    df["dataset"] = dataset_name
 
     # Update the participant_id with the dataset name as prefix
     df["participant_id"] = dataset_name + "_" + df["participant_id"].astype(str)
