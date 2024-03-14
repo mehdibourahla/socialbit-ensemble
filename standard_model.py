@@ -9,6 +9,43 @@ import time
 import pandas as pd
 
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2):
+        super(FocalLoss, self).__init__()
+        if alpha is not None:
+            # Ensure alpha is a float tensor
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        else:
+            self.alpha = None
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        # Ensure inputs are softmax probabilities (F.log_softmax to get log-probs for numerical stability)
+        log_probs = F.log_softmax(inputs, dim=1)
+        # Convert targets to the same format as log_probs
+        targets = targets.float()
+
+        # Calculate the Cross-Entropy component of the Focal Loss
+        ce_loss = -1 * torch.sum(targets * log_probs, dim=1)
+
+        # Calculate pt as the probability of the target class
+        pt = torch.exp(-ce_loss)
+
+        # Compute alpha factor
+        if self.alpha is not None:
+            if self.alpha.type() != inputs.data.type():
+                self.alpha = self.alpha.type_as(inputs.data)
+            # Apply alpha factor to each class (assumes alpha is provided as [alpha_negative, alpha_positive])
+            at = torch.sum(self.alpha * targets, dim=1)
+        else:
+            at = 1.0
+
+        # Calculate the final focal loss
+        focal_loss = at * (1 - pt) ** self.gamma * ce_loss
+
+        return focal_loss.mean()
+
+
 class StandardModel(nn.Module):
     def __init__(
         self,
@@ -112,7 +149,7 @@ class StandardModel(nn.Module):
         use_metadata=False,
         alpha=0.5,
     ):
-        bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.class_weights_tensor)
+        bce_loss_fn = FocalLoss(alpha=self.class_weights_tensor, gamma=2)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
         signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
@@ -275,8 +312,8 @@ class StandardModel(nn.Module):
                         expert_preds = (expert_probs > 0.5).float()
                         expert_correct = (expert_preds == labels_v).float().sum().item()
                         expert_correct_counts[expert_idx] += expert_correct
-
-                    loss_bce_v = bce_loss_fn(final_output_v, labels_v.float())
+                    preds_v = (final_output_v > 0.5).float()
+                    loss_bce_v = bce_loss_fn(preds_v, labels_v.float())
                     if self.num_experts > 1:
                         loss_cl_v = self.contrastive_loss(
                             representations_v, domains_v, labels_v[:, 1]
@@ -289,8 +326,8 @@ class StandardModel(nn.Module):
                     )
 
                     val_loss += loss_v.item()
-                    probs_v = torch.sigmoid(final_output_v)
-                    preds_v = (probs_v > 0.5).float()
+                    # probs_v = torch.sigmoid(final_output_v)
+                    # preds_v = (final_output_v > 0.5).float()
                     val_correct += (preds_v == labels_v).float().sum().item()
                     val_total += labels_v.numel()
 
@@ -409,9 +446,9 @@ class StandardModel(nn.Module):
                     # For each expert, check the misclassification.
                     expert_correct_counts[idx] += expert_correct
 
-                probs = torch.sigmoid(outputs)
+                # probs = torch.sigmoid(outputs)
                 for i in range(len(filename)):
-                    prediction = probs[i].cpu().numpy()
+                    prediction = outputs[i].cpu().numpy()
                     predictions.append(
                         {
                             "filename": filename[i],
@@ -421,7 +458,7 @@ class StandardModel(nn.Module):
                         }
                     )
 
-                preds = (probs > 0.5).float()
+                preds = (outputs > 0.5).float()
                 # Get the idx of the misclassified samples
                 misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
                 misclassified_idx = torch.unique(misclassified_idx)
@@ -435,7 +472,7 @@ class StandardModel(nn.Module):
                             expert_weight.cpu().item(),
                         )
                     obj["true_label"] = labels[idx, 1].cpu().numpy()
-                    obj["prediction"] = probs[idx, 1].cpu().numpy()
+                    obj["prediction"] = outputs[idx, 1].cpu().numpy()
                     df.append(obj)
 
                 # Compute confusion matrix components

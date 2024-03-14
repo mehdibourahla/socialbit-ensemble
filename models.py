@@ -117,59 +117,107 @@ class MasterModel(StandardModel):
             [ExpertModel(num_classes) for _ in range(num_experts)]
         )
 
-    def forward(self, x, expert_idx=None, inference_mode=False, signature_matrix=None):
-        shared_features = self.shared_extractor(x)
-
+    def process_experts(self, shared_features):
         expert_outputs = torch.zeros(
-            x.size(0), self.num_experts, self.num_classes, device=x.device
+            shared_features.size(0),
+            self.num_experts,
+            self.num_classes,
+            device=shared_features.device,
         )
         expert_representations = torch.zeros(
-            x.size(0), self.num_experts, 64 * 3, device=x.device
-        )  # Flattened representation
+            shared_features.size(0),
+            self.num_experts,
+            64 * 3,
+            device=shared_features.device,
+        )  # Adjust the size accordingly
 
-        # Process input through each expert's network
-        for i in range(self.num_experts):
-            output, representation = self.experts[i](shared_features)
+        for i, expert in enumerate(self.experts):
+            output, representation = expert(shared_features)
             expert_outputs[:, i, :] = output
             expert_representations[:, i, :] = representation.view(
-                x.size(0), -1
+                shared_features.size(0), -1
             )  # Flatten the representation
 
-        # Calculate similarities
-        similarities = torch.empty(
-            x.size(0), self.num_experts, signature_matrix.size(0), device=x.device
+        return expert_outputs, expert_representations
+
+    def compute_similarity_weights(self, expert_representations, signature_matrix):
+        batch_size, num_experts, _ = expert_representations.size()
+
+        similarities_pos = torch.empty(
+            batch_size, num_experts, device=expert_representations.device
         )
-        for i in range(self.num_experts):
+        similarities_neg = torch.empty(
+            batch_size, num_experts, device=expert_representations.device
+        )
+
+        for i in range(num_experts):
+
+            pos_index = 2 * i
+            neg_index = 2 * i + 1
+
             rep = expert_representations[:, i, :]
-            for j in range(signature_matrix.size(0)):
-                signature = signature_matrix[j, :].unsqueeze(0)
-                similarities[:, i, j] = F.cosine_similarity(rep, signature, dim=1)
+            signature_pos = signature_matrix[pos_index, :].unsqueeze(0)
+            signature_neg = signature_matrix[neg_index, :].unsqueeze(0)
 
-        # Compute summed similarities and select experts if needed
-        summed_similarities = similarities.sum(dim=2)
-        if inference_mode:
-            expert_idx = torch.argmax(summed_similarities, dim=1)
-        similarity_weights = F.softmax(summed_similarities, dim=1)
+            similarities_pos[:, i] = F.cosine_similarity(
+                rep, signature_pos.expand_as(rep), dim=1
+            )
+            similarities_neg[:, i] = F.cosine_similarity(
+                rep, signature_neg.expand_as(rep), dim=1
+            )
 
-        # Weighted sum of outputs and representations
+            # Sum the similarities across experts for positive and negative separately
+        sum_similarities_pos = similarities_pos.sum(dim=1, keepdim=True)
+        sum_similarities_neg = similarities_neg.sum(dim=1, keepdim=True)
+
+        # Concatenate the summed similarities for softmax
+        concatenated_similarities = torch.cat(
+            (sum_similarities_neg, sum_similarities_pos), dim=1
+        )
+
+        # Apply softmax to get a decision metric in shape (batch, 2)
+        decision_metric = F.softmax(concatenated_similarities, dim=1)
+
+        summed_similarities_expert = [
+            similarities_pos[:, i] + similarities_neg[:, i] for i in range(num_experts)
+        ]
+
+        similarity_weights = F.softmax(
+            torch.stack(summed_similarities_expert, dim=1), dim=1
+        )
+
+        return decision_metric, similarity_weights
+
+    def forward(self, x, expert_idx=None, inference_mode=False, signature_matrix=None):
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(x.size(0), 64 * 3, device=x.device)
-        if inference_mode:
+        representations = torch.zeros(
+            x.size(0), 64 * 3, device=x.device
+        )  # Adjust the size accordingly
+
+        shared_features = self.shared_extractor(x)
+
+        # Initialize tensors for outputs and representations
+        expert_outputs, expert_representations = self.process_experts(shared_features)
+
+        # Compute similarity weights if in inference mode and signature_matrix is provided
+        if inference_mode and signature_matrix is not None:
+            decision_metric, similarity_weights = self.compute_similarity_weights(
+                expert_representations, signature_matrix
+            )
+            expert_idx = torch.argmax(similarity_weights, dim=1)
+            final_output = decision_metric
             for i in range(self.num_experts):
-                weighted_output = expert_outputs[:, i, :] * similarity_weights[
+                # final_output += expert_outputs[:, i, :] * similarity_weights[
+                #     :, i
+                # ].unsqueeze(1)
+                representations += expert_representations[:, i, :] * similarity_weights[
                     :, i
                 ].unsqueeze(1)
-                final_output += weighted_output
-                weighted_rep = expert_representations[:, i, :] * similarity_weights[
-                    :, i
-                ].unsqueeze(1)
-                representations += weighted_rep
         else:
-            for sample in range(x.size(0)):
-                final_output[sample, :] = expert_outputs[sample, expert_idx[sample], :]
-                representations[sample, :] = expert_representations[
-                    sample, expert_idx[sample], :
-                ]
+            similarity_weights = None
+            for i in range(x.size(0)):
+                final_output[i, :] = expert_outputs[i, expert_idx[i], :]
+                representations[i, :] = expert_representations[i, expert_idx[i], :]
 
         return (
             final_output,
