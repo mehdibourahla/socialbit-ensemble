@@ -247,15 +247,8 @@ class StandardModel(nn.Module):
                     neg_representations_for_clustering
                 )
 
-                # Compute medoids separately for positive and negative representations
-                pos_medoids = [
-                    representative_cluster([rep], check=False)[0]
-                    for rep in pos_representations_for_clustering
-                ]
-                neg_medoids = [
-                    representative_cluster([rep], check=False)[0]
-                    for rep in neg_representations_for_clustering
-                ]
+                pos_medoids = representative_cluster(pos_representations_for_clustering)
+                neg_medoids = representative_cluster(neg_representations_for_clustering)
 
                 # Update the signature matrix with separate embeddings for positive and negative samples
                 for idx in range(self.num_experts):

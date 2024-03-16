@@ -52,6 +52,8 @@ def representative_cluster(X, check=False):
         medoid_index = np.argmin(score)
         medoids.append(expert[medoid_index])
 
+    medoids = np.array(medoids)
+
     # Optional: Check the distance between medoids
     if check:
         pairwise_distances = squareform(pdist(np.array(medoids), "cosine"))
