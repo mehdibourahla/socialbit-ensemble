@@ -313,7 +313,7 @@ class StandardModel(nn.Module):
                         )
 
                     loss_v = (
-                        alpha * loss_bce_v + beta * loss_cl_v
+                        1 * loss_bce_v + 0 * loss_cl_v
                         if self.num_experts > 1
                         else loss_bce_v
                     )
