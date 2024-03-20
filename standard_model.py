@@ -313,7 +313,7 @@ class StandardModel(nn.Module):
                         )
 
                     loss_v = (
-                        1 * loss_bce_v + 0 * loss_cl_v
+                        alpha * loss_bce_v + beta * loss_cl_v
                         if self.num_experts > 1
                         else loss_bce_v
                     )
@@ -384,18 +384,18 @@ class StandardModel(nn.Module):
             val_accuracies.append(val_accuracy)
 
             # Early stopping
-            # if early_stopping.early_stop(val_loss):
+            if early_stopping.early_stop(val_loss):
 
-            #     log_message(
-            #         {
-            #             "Early Stopping": f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
-            #         }
-            #     )
-            #     # Save the model checkpoint
-            #     early_stopping.save_checkpoint(
-            #         val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
-            #     )
-            #     break
+                log_message(
+                    {
+                        "Early Stopping": f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
+                    }
+                )
+                # Save the model checkpoint
+                early_stopping.save_checkpoint(
+                    val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
+                )
+                break
         return (
             signature_matrix,
             meta_over_epochs,
