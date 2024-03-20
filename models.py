@@ -67,12 +67,14 @@ class SharedFeatureExtractor(nn.Module):
         self.conv2 = nn.Conv1d(
             in_channels=512, out_channels=256, kernel_size=3, padding=1
         )
+        self.shared_norm = nn.BatchNorm1d(num_features=256)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = self.pool(x)
         x = F.relu(self.conv2(x))
         x = self.pool(x)
+        x = self.shared_norm(x)
         return x
 
 
@@ -140,84 +142,79 @@ class MasterModel(StandardModel):
 
         return expert_outputs, expert_representations
 
-    def compute_similarity_weights(self, expert_representations, signature_matrix):
-        batch_size, num_experts, _ = expert_representations.size()
+    def compute_similarity_weights(self, shared_featrues, signature_matrix):
+        num_experts, _ = signature_matrix.size()
+        batch_size, _ = shared_featrues.size()
 
         similarities_pos = torch.empty(
-            batch_size, num_experts, device=expert_representations.device
+            batch_size, num_experts // 2, device=shared_featrues.device
         )
         similarities_neg = torch.empty(
-            batch_size, num_experts, device=expert_representations.device
+            batch_size, num_experts // 2, device=shared_featrues.device
         )
 
-        for i in range(num_experts):
-
-            pos_index = 2 * i
-            neg_index = 2 * i + 1
-
-            rep = expert_representations[:, i, :]
-            signature_pos = signature_matrix[pos_index, :].unsqueeze(0)
-            signature_neg = signature_matrix[neg_index, :].unsqueeze(0)
-
-            similarities_pos[:, i] = F.cosine_similarity(
-                rep, signature_pos.expand_as(rep), dim=1
-            )
-            similarities_neg[:, i] = F.cosine_similarity(
-                rep, signature_neg.expand_as(rep), dim=1
-            )
-
-        # Sum the similarities across experts for positive and negative separately
-        sum_similarities_pos = similarities_pos.sum(dim=1, keepdim=True)
-        sum_similarities_neg = similarities_neg.sum(dim=1, keepdim=True)
-
-        # Concatenate the summed similarities for softmax
-        concatenated_similarities = torch.cat(
-            (sum_similarities_neg, sum_similarities_pos), dim=1
-        )
-
-        # Apply softmax to get a decision metric in shape (batch, 2)
-        decision_metric = F.softmax(concatenated_similarities, dim=1)
+        for i in range(batch_size):
+            rep = shared_featrues[i, :]
+            for j in range(num_experts):
+                if j % 2 == 0:
+                    signature_pos = signature_matrix[j, :]
+                    similarities_pos[i, j // 2] = F.cosine_similarity(
+                        rep, signature_pos, dim=0
+                    )
+                else:
+                    signature_neg = signature_matrix[j, :]
+                    similarities_neg[i, j // 2] = F.cosine_similarity(
+                        rep, signature_neg, dim=0
+                    )
 
         summed_similarities_expert = [
-            similarities_pos[:, i] + similarities_neg[:, i] for i in range(num_experts)
+            similarities_pos[:, i] + similarities_neg[:, i]
+            for i in range(num_experts // 2)
         ]
 
-        similarity_weights = F.softmax(
-            torch.stack(summed_similarities_expert, dim=1), dim=1
-        )
+        summed_similarities_expert = torch.stack(summed_similarities_expert, dim=1)
 
-        return decision_metric, similarity_weights
+        similarity_weights = F.softmax(summed_similarities_expert, dim=1)
+
+        return similarity_weights
 
     def forward(self, x, expert_idx=None, inference_mode=False, signature_matrix=None):
+        similarity_weights = None
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
         representations = torch.zeros(
             x.size(0), 64 * 3, device=x.device
         )  # Adjust the size accordingly
 
-        shared_features = self.shared_extractor(x)
+        shared_features = self.shared_extractor(x)  # Shape: (batch, 256, 9)
+        # I am currently passing the shared features to the experts according to the domain id of the input data x
+        flatten_shared_features = shared_features.view(
+            shared_features.size(0), -1
+        )  # Shape: (batch, 256*9)
+
+        if inference_mode:
+            # Signature Matrix has shape (2*num_experts, 256*9)
+            # I need to compute the similarity weights between the flattened shared features and the signature matrix
+            # to determine which expert to use
+            similarity_weights = self.compute_similarity_weights(
+                flatten_shared_features, signature_matrix
+            )
+            expert_idx = torch.argmax(similarity_weights, dim=1)
 
         # Initialize tensors for outputs and representations
         expert_outputs, expert_representations = self.process_experts(shared_features)
 
-        # Compute similarity weights if in inference mode and signature_matrix is provided
-        if inference_mode and signature_matrix is not None:
-            decision_metric, similarity_weights = self.compute_similarity_weights(
-                expert_representations, signature_matrix
-            )
-            expert_idx = torch.argmax(similarity_weights, dim=1)
-            final_output = decision_metric
-            for i in range(self.num_experts):
-                # final_output += expert_outputs[:, i, :] * similarity_weights[
-                #     :, i
-                # ].unsqueeze(1)
-                representations += expert_representations[:, i, :] * similarity_weights[
-                    :, i
-                ].unsqueeze(1)
-        else:
-            similarity_weights = None
-            for i in range(x.size(0)):
+        for i in range(x.size(0)):
+            if not inference_mode:
                 final_output[i, :] = expert_outputs[i, expert_idx[i], :]
                 representations[i, :] = expert_representations[i, expert_idx[i], :]
+            else:
+                for j in range(self.num_experts):
+                    final_output[i, :] += (
+                        similarity_weights[i, j] * expert_outputs[i, j, :]
+                    )
+                    representations[i, :] += (
+                        similarity_weights[i, j] * expert_representations[i, j, :]
+                    )
 
         return (
             final_output,
@@ -225,4 +222,5 @@ class MasterModel(StandardModel):
             expert_idx,
             expert_outputs,
             similarity_weights,
+            flatten_shared_features,
         )
