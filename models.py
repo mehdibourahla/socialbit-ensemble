@@ -166,7 +166,7 @@ class MasterModel(StandardModel):
                 rep, signature_neg.expand_as(rep), dim=1
             )
 
-            # Sum the similarities across experts for positive and negative separately
+        # Sum the similarities across experts for positive and negative separately
         sum_similarities_pos = similarities_pos.sum(dim=1, keepdim=True)
         sum_similarities_neg = similarities_neg.sum(dim=1, keepdim=True)
 
