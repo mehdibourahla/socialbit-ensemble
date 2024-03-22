@@ -52,7 +52,7 @@ def representative_cluster(X, check=False):
         medoid_index = np.argmin(score)
         medoids.append(expert[medoid_index])
 
-    medoids = np.array(medoids)
+    # medoids = np.array(medoids)
 
     # Optional: Check the distance between medoids
     if check:

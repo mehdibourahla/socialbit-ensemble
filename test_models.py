@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from models import MasterModel
-from data_loader import YAMNetFeaturesDatasetEAR
+from data_loader import YAMNetFeaturesDatasetEAR, YAMNetFeaturesDatasetDavid
 import torch
 from torch.utils.data import DataLoader
 from train import evaluate_and_save_results
@@ -21,15 +21,7 @@ def initialize_model(args):
     return model, signature_matrix, device
 
 
-def test_models(model, signature_matrix, device, args):
-    # Load CSV file
-    test_df = pd.read_csv(args.ground_truth)
-    test_df["dataset"] = pd.Categorical(test_df["dataset"]).codes
-    test_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(test_df),
-        batch_size=32,
-        shuffle=False,
-    )
+def test_models(model, test_gen, signature_matrix, device, args):
 
     results = evaluate_and_save_results(
         model,
@@ -42,6 +34,27 @@ def test_models(model, signature_matrix, device, args):
     return results
 
 
+def get_data_loaders(args):
+    test_df = pd.read_csv(args.ear_ground_truth)
+    test_df["dataset"] = pd.Categorical(test_df["dataset"]).codes
+    ear_test_gen = DataLoader(
+        YAMNetFeaturesDatasetEAR(test_df),
+        batch_size=32,
+        shuffle=False,
+        num_workers=8,
+    )
+
+    ext_test_df = pd.read_csv(os.path.join(args.lab_ground_truth, "metadata.csv"))
+    ext_test_gen = DataLoader(
+        YAMNetFeaturesDatasetDavid(ext_test_df, args.lab_ground_truth),
+        batch_size=32,
+        shuffle=False,
+        num_workers=8,
+    )
+
+    return ear_test_gen, ext_test_gen
+
+
 def main(args):
     wandb.login(key=args.wandb_key)
     config = {
@@ -52,7 +65,23 @@ def main(args):
 
     os.makedirs(args.output_dir, exist_ok=True)
     model, signature_matrix, device = initialize_model(args)
-    results = test_models(model, signature_matrix, device, args)
+    ear_test_gen, lab_test_gen = get_data_loaders(args)
+    results_ear = evaluate_and_save_results(
+        model,
+        ear_test_gen,
+        signature_matrix,
+        device,
+        args.output_dir,
+        "EAR",
+    )
+    results_lab = evaluate_and_save_results(
+        model,
+        lab_test_gen,
+        signature_matrix,
+        device,
+        args.output_dir,
+        "LAB",
+    )
 
     # Save results to csv file
     results.to_csv(os.path.join(args.output_dir, "weights-output.csv"), index=False)
@@ -69,7 +98,12 @@ def initialize_args(parser):
         "--output_dir", required=True, help="Path to Output the results"
     )
     parser.add_argument(
-        "--ground_truth",
+        "--ear_ground_truth",
+        required=True,
+        help="Path to the directory containing test dataset",
+    )
+    parser.add_argument(
+        "--lab_ground_truth",
         required=True,
         help="Path to the directory containing test dataset",
     )

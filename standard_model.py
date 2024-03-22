@@ -7,6 +7,7 @@ from utils import representative_cluster, log_message
 import numpy as np
 import time
 import pandas as pd
+import os
 
 
 class FocalLoss(nn.Module):
@@ -132,13 +133,6 @@ class StandardModel(nn.Module):
 
         return loss
 
-    def preprocess_representations(self, representations):
-        representations = [
-            torch.cat(rep, dim=0).cpu().numpy() for rep in representations
-        ]  # Shape: (num_experts, N, 64 * 3)
-
-        return representations
-
     def train_model(
         self,
         train_loader_x,
@@ -178,46 +172,38 @@ class StandardModel(nn.Module):
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
                 optimizer.zero_grad()
-                if self.transpose_input:
-                    inputs_x = inputs_x.transpose(1, 2)
-                # Check if signature matrix is diffenrent than zeros
 
-                final_output_x, representations_x, expert_idx_x, _, _ = (
-                    self(
-                        inputs_x,
-                        domains_x,
-                        inference_mode=False,
-                        signature_matrix=signature_matrix,
-                    )
-                    if self.num_experts > 1
-                    else self(inputs_x)
+                final_output_x, representations_x = self.forward_train(
+                    inputs_x,
+                    domains_x,
                 )
-                if self.num_experts > 1:
-                    pos_labels = labels_x[:, 1] > 0.5
-                    neg_labels = ~pos_labels
-                    # Update signature sums and counts
-                    for idx in range(self.num_experts):
-                        mask_pos = (expert_idx_x == idx) & pos_labels
-                        mask_neg = (expert_idx_x == idx) & neg_labels
-                        if mask_pos.any():
-                            sampled_pos_representations = representations_x[
-                                mask_pos
-                            ].detach()
-                            pos_representations_for_clustering[idx].append(
-                                sampled_pos_representations
-                            )
 
-                        if mask_neg.any():
-                            sampled_neg_representations = representations_x[
-                                mask_neg
-                            ].detach()
-                            neg_representations_for_clustering[idx].append(
-                                sampled_neg_representations
-                            )
+                pos_labels = labels_x[:, 1] > 0.5
+                neg_labels = ~pos_labels
+                # Update signature sums and counts
+                for idx in range(self.num_experts):
+                    mask_pos = (domains_x == idx) & pos_labels
+                    mask_neg = (domains_x == idx) & neg_labels
+                    if mask_pos.any():
+                        sampled_pos_representations = representations_x[
+                            mask_pos, idx, :
+                        ].detach()
+                        pos_representations_for_clustering[idx].extend(
+                            sampled_pos_representations
+                        )
 
-                    loss_cl_x = self.contrastive_loss(
-                        representations_x, domains_x, labels_x[:, 1]
-                    )  # Contrastive loss
+                    if mask_neg.any():
+                        sampled_neg_representations = representations_x[
+                            mask_neg, idx, :
+                        ].detach()
+
+                        neg_representations_for_clustering[idx].extend(
+                            sampled_neg_representations
+                        )
+
+                loss_cl_x = self.contrastive_loss(
+                    representations_x, domains_x, labels_x[:, 1]
+                )  # Contrastive loss
                 loss_bce_x = bce_loss_fn(
                     final_output_x, labels_x.float()
                 )  # Social Interaction loss
@@ -238,73 +224,59 @@ class StandardModel(nn.Module):
             train_accuracy = correct / total
             total_loss /= len(train_loader_x)
 
-            if self.num_experts > 1:
-                # TODO: Try to not update the signature matrix at every epoch
-                pos_representations_for_clustering = self.preprocess_representations(
-                    pos_representations_for_clustering
+            for idx in range(self.num_experts):
+                min_pos_len = min(
+                    [len(reps) for reps in pos_representations_for_clustering]
                 )
-                neg_representations_for_clustering = self.preprocess_representations(
-                    neg_representations_for_clustering
+                min_neg_len = min(
+                    [len(reps) for reps in neg_representations_for_clustering]
                 )
 
-                pos_medoids = representative_cluster(pos_representations_for_clustering)
-                neg_medoids = representative_cluster(neg_representations_for_clustering)
+                # Cut the list of representations to the minimum length
+                pos_representations_for_clustering[idx] = (
+                    pos_representations_for_clustering[idx][:min_pos_len]
+                )
+                neg_representations_for_clustering[idx] = (
+                    neg_representations_for_clustering[idx][:min_neg_len]
+                )
 
-                # Update the signature matrix with separate embeddings for positive and negative samples
-                for idx in range(self.num_experts):
-                    signature_matrix[idx * 2] = torch.from_numpy(pos_medoids[idx]).to(
-                        device
-                    )  # Positive
-                    signature_matrix[idx * 2 + 1] = torch.from_numpy(
-                        neg_medoids[idx]
-                    ).to(
-                        device
-                    )  # Negative
+                pos_representations_for_clustering[idx] = torch.stack(
+                    pos_representations_for_clustering[idx]
+                )
+                neg_representations_for_clustering[idx] = torch.stack(
+                    neg_representations_for_clustering[idx]
+                )
+
+            pos_medoids = representative_cluster(pos_representations_for_clustering)
+            neg_medoids = representative_cluster(neg_representations_for_clustering)
+
+            # Update the signature matrix with separate embeddings for positive and negative samples
+            for idx in range(self.num_experts):
+                signature_matrix[idx * 2] = pos_medoids[idx].to(device)  # Positive
+                signature_matrix[idx * 2 + 1] = neg_medoids[idx].to(device)  # Negative
 
             if use_metadata:
                 meta_over_epochs.append(signature_matrix.clone())
             epoch_end_training = time.time()
+
             # Validation phase
             self.eval()  # Set the model to evaluation mode
             epoch_start_validation = time.time()
             val_loss = 0
             val_correct = 0
             val_total = 0
-            expert_selection_counts = [0] * self.num_experts
-            expert_correct_counts = [0] * self.num_experts
             with torch.no_grad():  # No gradient calculation for validation
                 for i, batch in enumerate(validation_loader):
                     _, inputs_v, labels_v, domains_v = batch
                     inputs_v, labels_v = inputs_v.to(device), labels_v.to(device)
 
-                    if self.transpose_input:
-                        inputs_v = inputs_v.transpose(1, 2)
-
-                    (
-                        final_output_v,
-                        representations_v,
-                        expert_idx_v,
-                        expert_output_v,
-                        _,
-                    ) = (
-                        self(
+                    (final_output_v, representations_v, _, _, _, _) = (
+                        self.forward_inference(
                             inputs_v,
-                            inference_mode=True,
                             signature_matrix=signature_matrix,
                         )
-                        if self.num_experts > 1
-                        else self(inputs_v)
                     )
-                    # Update expert selection counts
-                    for expert_idx in expert_idx_v.tolist():
-                        expert_selection_counts[expert_idx] += 1
 
-                        # Compute accuracy for each expert
-                        expert_output = expert_output_v[:, expert_idx, :]
-                        expert_probs = torch.sigmoid(expert_output)
-                        expert_preds = (expert_probs > 0.5).float()
-                        expert_correct = (expert_preds == labels_v).float().sum().item()
-                        expert_correct_counts[expert_idx] += expert_correct
                     preds_v = (final_output_v > 0.5).float()
                     loss_bce_v = bce_loss_fn(preds_v, labels_v.float())
                     if self.num_experts > 1:
@@ -319,29 +291,13 @@ class StandardModel(nn.Module):
                     )
 
                     val_loss += loss_v.item()
-                    # probs_v = torch.sigmoid(final_output_v)
-                    # preds_v = (final_output_v > 0.5).float()
                     val_correct += (preds_v == labels_v).float().sum().item()
                     val_total += labels_v.numel()
 
             val_accuracy = val_correct / val_total
             val_loss /= len(validation_loader)
             epoch_end_validation = time.time()
-            total_samples = sum(expert_selection_counts)
-            for i, count in enumerate(expert_selection_counts):
-                count = expert_selection_counts[i]
-                correct = expert_correct_counts[i]
-                accuracy = correct / count if count > 0 else 0
 
-                log_message(
-                    {
-                        f"Expert {i+1}": {
-                            "Selections": count,
-                            "Selection Ratio": count / total_samples,
-                            "Accuracy": accuracy,
-                        }
-                    }
-                )
             training_time = epoch_end_training - epoch_start_training
             validation_time = epoch_end_validation - epoch_start_validation
 
@@ -411,83 +367,29 @@ class StandardModel(nn.Module):
         TN = 0  # True Negatives
         FP = 0  # False Positives
         FN = 0  # False Negatives
-        predictions = []
-        df = []
-        expert_selection_counts = [0] * self.num_experts
-        expert_correct_counts = [0] * self.num_experts
+
         with torch.no_grad():  # No gradient calculation for evaluation
             for batch in test_loader:
                 filename, inputs, labels, _ = batch
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                if self.transpose_input:
-                    inputs = inputs.transpose(1, 2)
-
-                (outputs, _, expert_idx, expert_outputs, expert_weights) = (
-                    self(inputs, inference_mode=True, signature_matrix=signature_matrix)
-                    if self.num_experts > 1
-                    else self(inputs)
+                (outputs, representations, expert_idx, _, _, _) = (
+                    self.forward_inference(inputs, signature_matrix=signature_matrix)
                 )
 
-                for idx in expert_idx.tolist():
-                    expert_selection_counts[idx] += 1
-
-                    expert_output = expert_outputs[:, idx, :]
-                    expert_probs = torch.sigmoid(expert_output)
-                    expert_preds = (expert_probs > 0.5).float()
-                    expert_correct = (expert_preds == labels).float().sum().item()
-                    # For each expert, check the misclassification.
-                    expert_correct_counts[idx] += expert_correct
-
-                # probs = torch.sigmoid(outputs)
-                for i in range(len(filename)):
-                    prediction = outputs[i].cpu().numpy()
-                    predictions.append(
-                        {
-                            "filename": filename[i],
-                            "true_label": labels[i].cpu().numpy()[1],
-                            "positive": prediction[1],
-                            "negative": prediction[0],
-                        }
-                    )
-
                 preds = (outputs > 0.5).float()
-                # Get the idx of the misclassified samples
-                misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
-                misclassified_idx = torch.unique(misclassified_idx)
-                for idx in misclassified_idx:
-                    obj = {"filename": filename[idx].split("/")[-1]}
-                    for i in range(self.num_experts):
-                        expert_preds = torch.sigmoid(expert_outputs[idx, i, :])
-                        expert_weight = expert_weights[idx, i]
-                        obj[f"expert_{i+1}"] = (
-                            expert_preds.cpu().numpy()[1],
-                            expert_weight.cpu().item(),
-                        )
-                    obj["true_label"] = labels[idx, 1].cpu().numpy()
-                    obj["prediction"] = outputs[idx, 1].cpu().numpy()
-                    df.append(obj)
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels == 1)).float().sum().item()
                 TN += ((preds == 0) & (labels == 0)).float().sum().item()
                 FP += ((preds == 1) & (labels == 0)).float().sum().item()
                 FN += ((preds == 0) & (labels == 1)).float().sum().item()
-        df = pd.DataFrame(df)
+
         # Calculate sensitivity and specificity
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = (TP + TN) / (TP + TN + FP + FN)
 
-        total_samples = sum(expert_selection_counts)
-        for i in range(self.num_experts):
-            count = expert_selection_counts[i]
-            correct = expert_correct_counts[i]
-            accuracy_expert = correct / count if count > 0 else 0
-
-            print(
-                f"Expert {i+1}: Selections: {count}, Selection Ratio: {count / total_samples}, Accuracy: {accuracy_expert}"
-            )
         print(
             {
                 "Sensitivity": sensitivity,
@@ -503,4 +405,4 @@ class StandardModel(nn.Module):
             }
         )
 
-        return accuracy, sensitivity, specificity, df
+        return accuracy, sensitivity, specificity

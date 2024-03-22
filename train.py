@@ -102,8 +102,7 @@ def evaluate_and_save_results(
     dataset_name,
 ):
     result_file_path = os.path.join(output_dir, f"{dataset_name}_results.txt")
-    predictions_file_name = os.path.join(output_dir, f"{dataset_name}_predictions.csv")
-    test_accuracy, sensitivity, specificity, predictions = model.evaluate_model(
+    test_accuracy, sensitivity, specificity = model.evaluate_model(
         dataset_name, data_loader, signature_matrix, device
     )
 
@@ -111,10 +110,6 @@ def evaluate_and_save_results(
         f.write(
             f"Test Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
         )
-    pd.DataFrame(predictions).to_csv(
-        predictions_file_name,
-        index=False,
-    )
 
 
 def main(args):
