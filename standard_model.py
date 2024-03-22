@@ -152,7 +152,7 @@ class StandardModel(nn.Module):
         bce_loss_fn = FocalLoss(alpha=self.class_weights_tensor, gamma=2)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=10, delta=0)
-        signature_matrix = torch.rand(self.num_experts * 2, 256 * 9, device=device)
+        signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
 
         beta = 1 - alpha
 
@@ -182,14 +182,7 @@ class StandardModel(nn.Module):
                     inputs_x = inputs_x.transpose(1, 2)
                 # Check if signature matrix is diffenrent than zeros
 
-                (
-                    final_output_x,
-                    representations_x,
-                    expert_idx_x,
-                    _,
-                    _,
-                    flatten_shared_features,
-                ) = (
+                final_output_x, representations_x, expert_idx_x, _, _ = (
                     self(
                         inputs_x,
                         domains_x,
@@ -207,7 +200,7 @@ class StandardModel(nn.Module):
                         mask_pos = (expert_idx_x == idx) & pos_labels
                         mask_neg = (expert_idx_x == idx) & neg_labels
                         if mask_pos.any():
-                            sampled_pos_representations = flatten_shared_features[
+                            sampled_pos_representations = representations_x[
                                 mask_pos
                             ].detach()
                             pos_representations_for_clustering[idx].append(
@@ -215,7 +208,7 @@ class StandardModel(nn.Module):
                             )
 
                         if mask_neg.any():
-                            sampled_neg_representations = flatten_shared_features[
+                            sampled_neg_representations = representations_x[
                                 mask_neg
                             ].detach()
                             neg_representations_for_clustering[idx].append(
@@ -223,7 +216,7 @@ class StandardModel(nn.Module):
                             )
 
                     loss_cl_x = self.contrastive_loss(
-                        flatten_shared_features, domains_x, labels_x[:, 1]
+                        representations_x, domains_x, labels_x[:, 1]
                     )  # Contrastive loss
                 loss_bce_x = bce_loss_fn(
                     final_output_x, labels_x.float()
@@ -293,7 +286,6 @@ class StandardModel(nn.Module):
                         expert_idx_v,
                         expert_output_v,
                         _,
-                        flatten_shared_features_v,
                     ) = (
                         self(
                             inputs_v,
@@ -317,7 +309,7 @@ class StandardModel(nn.Module):
                     loss_bce_v = bce_loss_fn(preds_v, labels_v.float())
                     if self.num_experts > 1:
                         loss_cl_v = self.contrastive_loss(
-                            flatten_shared_features_v, domains_v, labels_v[:, 1]
+                            representations_v, domains_v, labels_v[:, 1]
                         )
 
                     loss_v = (
@@ -431,7 +423,7 @@ class StandardModel(nn.Module):
                 if self.transpose_input:
                     inputs = inputs.transpose(1, 2)
 
-                (outputs, _, expert_idx, expert_outputs, expert_weights, _) = (
+                (outputs, _, expert_idx, expert_outputs, expert_weights) = (
                     self(inputs, inference_mode=True, signature_matrix=signature_matrix)
                     if self.num_experts > 1
                     else self(inputs)
