@@ -97,9 +97,11 @@ def main(args):
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
-    torch.save(
-        model.signature_matrix, os.path.join(current_output_dir, "signature_matrix.pth")
-    )
+    if not args.baseline:
+        torch.save(
+            model.signature_matrix,
+            os.path.join(current_output_dir, "signature_matrix.pth"),
+        )
     _, accuracy, sensitivity, specificity, _ = model.evaluate(test_gen, device)
     log_message(
         {
