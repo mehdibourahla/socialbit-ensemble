@@ -1,6 +1,9 @@
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import os
 import numpy as np
 import pandas as pd
@@ -11,6 +14,10 @@ import wandb
 
 
 def log_message(message):
+    line = ""
+    for key, value in message.items():
+        line += f"{key}: {round(value,4) if type(value) == float else value} | "
+    print(line)
     if wandb.run is not None:
         wandb.log(message)
 
@@ -25,6 +32,81 @@ def setup_wandb(args):
         "is_baseline": args.baseline,
     }
     wandb.init(project="socialbit-ensemble", config=config)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2):
+        super(FocalLoss, self).__init__()
+        if alpha is not None:
+            # Ensure alpha is a float tensor
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        else:
+            self.alpha = None
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        # Ensure inputs are softmax probabilities (F.log_softmax to get log-probs for numerical stability)
+        log_probs = F.log_softmax(inputs, dim=1)
+        # Convert targets to the same format as log_probs
+        targets = targets.float()
+
+        # Calculate the Cross-Entropy component of the Focal Loss
+        ce_loss = -1 * torch.sum(targets * log_probs, dim=1)
+
+        # Calculate pt as the probability of the target class
+        pt = torch.exp(-ce_loss)
+
+        # Compute alpha factor
+        if self.alpha is not None:
+            if self.alpha.type() != inputs.data.type():
+                self.alpha = self.alpha.type_as(inputs.data)
+            # Apply alpha factor to each class (assumes alpha is provided as [alpha_negative, alpha_positive])
+            at = torch.sum(self.alpha * targets, dim=1)
+        else:
+            at = 1.0
+
+        # Calculate the final focal loss
+        focal_loss = at * (1 - pt) ** self.gamma * ce_loss
+
+        return focal_loss.mean()
+
+
+class EarlyStopping:
+    def __init__(self, patience=10, delta=0):
+        """
+        :param patience: How long to wait after the last time validation loss improved.
+                         Default: 5
+        :param delta: Minimum change in the monitored quantity to qualify as an improvement.
+                      Default: 0
+        """
+        self.patience = patience
+        self.delta = delta
+        self.counter = 0
+        self.min_validation_loss = float("inf")
+        self.best_model = None  # Optional: To keep track of the best model
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss - self.delta:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+            return False
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+            return False
+
+    def save_checkpoint(self, val_loss, model, filename="model_checkpoint.pth"):
+        """
+        Saves model when validation loss decreases.
+        :param val_loss: Current epoch's validation loss
+        :param model: The PyTorch model to save
+        :param filename: Filename for the saved model checkpoint (optional)
+        """
+        if val_loss < self.min_validation_loss:
+            torch.save(model.state_dict(), filename)
+            self.min_validation_loss = val_loss
+            self.best_model = model
 
 
 def representative_cluster(X, check=False):

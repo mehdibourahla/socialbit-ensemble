@@ -2,7 +2,8 @@ import os
 import argparse
 from data_loader import YAMNetFeaturesDatasetEAR, YAMNetFeaturesDatasetDavid
 from sklearn.utils.class_weight import compute_class_weight
-from models import MasterModel, BiLSTMModel
+from models import MasterModel
+from baseline import BiLSTMModel
 import torch
 from torch.utils.data import DataLoader
 import pandas as pd
@@ -13,6 +14,7 @@ from utils import (
     setup_directories,
     load_and_prepare_data,
     setup_wandb,
+    log_message,
 )
 
 
@@ -59,63 +61,11 @@ def get_data_loaders(training_fold, validation_fold, test_fold):
     return train_gen, val_gen, test_gen
 
 
-def train_model(model, train_gen, val_gen, device, current_output_dir, args):
-    epochs = args.epochs
-    output_dir = args.output_dir
-    use_metadata = args.metadata
-    alpha = float(args.alpha / 10)
-    (
-        signature_matrix,
-        signature_matrix_over_epochs,
-        train_losses,
-        val_losses,
-        train_accuracies,
-        val_accuracies,
-    ) = model.train_model(
-        train_gen,
-        val_gen,
-        device,
-        output_dir,
-        epochs=epochs,
-        use_metadata=use_metadata,
-        alpha=alpha,
-    )
-    # Save the model and signature matrix
-    torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
-    torch.save(
-        signature_matrix, os.path.join(current_output_dir, "signature_matrix.pth")
-    )
-
-    plot_training_curves(
-        train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
-    )
-
-    return model, signature_matrix, signature_matrix_over_epochs
-
-
-def evaluate_and_save_results(
-    model,
-    data_loader,
-    signature_matrix,
-    device,
-    output_dir,
-    dataset_name,
-):
-    result_file_path = os.path.join(output_dir, f"{dataset_name}_results.txt")
-    test_accuracy, sensitivity, specificity = model.evaluate_model(
-        dataset_name, data_loader, signature_matrix, device
-    )
-
-    with open(result_file_path, "w") as f:
-        f.write(
-            f"Test Accuracy: {test_accuracy}\nSensitivity: {sensitivity}\nSpecificity: {specificity}\n"
-        )
-
-
 def main(args):
+
+    # Initialize wandb and create output directories
     setup_wandb(args)
     setup_directories(args.output_dir)
-
     current_output_dir = os.path.join(
         args.output_dir,
         f"fold_{args.i_fold + 1}",
@@ -123,25 +73,40 @@ def main(args):
     )
     setup_directories(current_output_dir)
 
+    # Load and prepare data
     training_fold, validation_fold, test_fold = load_and_prepare_data(
         args.data_dir, args.i_fold, args.j_subfold
     )
+
+    # Compute class weights
     class_weights = compute_weights(training_fold)
+
+    # Initialize model and device
     model, device = initialize_model(args, class_weights)
+
+    # Get loaders Train the model
     train_gen, val_gen, test_gen = get_data_loaders(
         training_fold, validation_fold, test_fold
     )
-    model, signature_matrix, _ = train_model(
-        model,
-        train_gen,
-        val_gen,
-        device,
-        current_output_dir,
-        args=args,
+    train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
+        train_gen, val_gen, device, current_output_dir
     )
 
-    evaluate_and_save_results(
-        model, test_gen, signature_matrix, device, current_output_dir, "EAR"
+    # Save model and log results
+    plot_training_curves(
+        train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
+    )
+    torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
+    torch.save(
+        model.signature_matrix, os.path.join(current_output_dir, "signature_matrix.pth")
+    )
+    _, accuracy, sensitivity, specificity, _ = model.evaluate(test_gen, device)
+    log_message(
+        {
+            "EAR_Accuracy": accuracy,
+            "EAR_Sensitivity": sensitivity,
+            "EAR_Specificity": specificity,
+        }
     )
 
     # Evaluate on external test data
@@ -152,10 +117,15 @@ def main(args):
         shuffle=False,
         num_workers=8,
     )
-
-    evaluate_and_save_results(
-        model, ext_test_gen, signature_matrix, device, current_output_dir, "LAB"
+    _, accuracy, sensitivity, specificity, _ = model.evaluate(ext_test_gen, device)
+    log_message(
+        {
+            "LAB_Accuracy": accuracy,
+            "LAB_Sensitivity": sensitivity,
+            "LAB_Specificity": specificity,
+        }
     )
+
     wandb.finish()
 
 
