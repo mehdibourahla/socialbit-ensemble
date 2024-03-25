@@ -2,56 +2,16 @@ import torch.nn as nn
 import torch
 from utils import log_message, EarlyStopping
 import time
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+import torch.nn.functional as F
+import math
 
 
-class BiLSTMModel(nn.Module):
-    def __init__(
-        self,
-        class_weights_tensor=None,
-        input_size=1024,
-        hidden_size=150,
-        num_layers=2,
-        num_classes=2,
-        dropout_rate=0.25,
-    ):
-        super(BiLSTMModel, self).__init__()
+class BaselineModel(nn.Module):
+
+    def __init__(self, class_weights_tensor=None):
+        super(BaselineModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-
-        # Bidirectional LSTM layer
-        self.lstm = nn.LSTM(
-            input_size,
-            hidden_size,
-            num_layers,
-            batch_first=True,
-            bidirectional=True,
-            dropout=dropout_rate,
-        )
-
-        # Dropout for regularization
-        self.dropout = nn.Dropout(dropout_rate)
-
-        # Fully connected layer
-        self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
-        self.class_weights_tensor = class_weights_tensor
-
-    def forward(self, x):
-        # Initialize hidden state and cell state
-        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(
-            x.device
-        )  # *2 for bidirectional
-        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
-
-        # Forward propagate the LSTM
-        x = x.transpose(1, 2)
-        out, _ = self.lstm(x, (h0, c0))
-
-        # Pass the output of the last time step to the classifier
-        out = self.dropout(out[:, -1, :])  # Take the last time step
-        out = self.fc(out)
-
-        return out
 
     def train_epoch(self, train_loader, criterion, optimizer, device):
         self.train()
@@ -142,7 +102,7 @@ class BiLSTMModel(nn.Module):
         early_stopping_patience=10,
     ):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
 
         train_losses = []
@@ -183,3 +143,132 @@ class BiLSTMModel(nn.Module):
                 )
                 break
         return train_losses, val_losses, train_accuracies, val_accuracies
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, feature_length, num_heads, ff_dim, dropout):
+        super(TransformerBlock, self).__init__()
+        self.attention = nn.MultiheadAttention(
+            embed_dim=feature_length,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm1 = nn.LayerNorm(feature_length, eps=1e-6)
+        self.norm2 = nn.LayerNorm(feature_length, eps=1e-6)
+        self.ff = nn.Sequential(
+            nn.Conv1d(in_channels=feature_length, out_channels=ff_dim, kernel_size=1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(in_channels=ff_dim, out_channels=feature_length, kernel_size=1),
+        )
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # Adjust input shape from (batch, feature, seq_len) to (batch, seq_len, feature)
+        x = x.permute(0, 2, 1)
+
+        # Multi-Head Attention
+        residual = x
+        x = self.norm1(x)
+        x, _ = self.attention(x, x, x)
+        x = residual + self.dropout1(x)
+
+        # Feed-Forward Network
+        residual = x
+        x = self.norm2(x)
+        # Adjust x back to (batch, feature, seq_len) for Conv1D, then revert
+        x = self.ff(x.permute(0, 2, 1)).permute(0, 2, 1)
+        x = residual + self.dropout2(x)
+
+        # Revert shape to (batch, feature, seq_len) for downstream processing
+        x = x.permute(0, 2, 1)
+        return x
+
+
+class TransformerModel(BaselineModel):
+    def __init__(
+        self,
+        feature_length=1024,
+        num_transformers=2,
+        num_heads=8,
+        ff_dim=9,
+        mlp_units=32,
+        dropout=0.35,
+        class_weights_tensor=None,
+    ):
+        super(TransformerModel, self).__init__(
+            class_weights_tensor=class_weights_tensor
+        )
+        self.transformers = nn.ModuleList(
+            [
+                TransformerBlock(feature_length, num_heads, ff_dim, dropout)
+                for _ in range(num_transformers)
+            ]
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.mlp = nn.Sequential(
+            nn.Linear(feature_length, mlp_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_units, 2),
+        )
+
+    def forward(self, x):
+        for transformer in self.transformers:
+            x = transformer(x)
+        x = self.pool(x).squeeze(-1)
+
+        x = self.mlp(x)
+        return x
+
+
+class BiLSTMModel(BaselineModel):
+    def __init__(
+        self,
+        class_weights_tensor=None,
+        input_size=1024,
+        hidden_size=150,
+        num_layers=2,
+        num_classes=2,
+        dropout_rate=0.25,
+    ):
+        super(BiLSTMModel, self).__init__(class_weights_tensor=class_weights_tensor)
+        self.class_weights_tensor = class_weights_tensor
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+        # Bidirectional LSTM layer
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout_rate,
+        )
+
+        # Dropout for regularization
+        self.dropout = nn.Dropout(dropout_rate)
+
+        # Fully connected layer
+        self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
+        self.class_weights_tensor = class_weights_tensor
+
+    def forward(self, x):
+        # Initialize hidden state and cell state
+        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(
+            x.device
+        )  # *2 for bidirectional
+        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+
+        # Forward propagate the LSTM
+        x = x.transpose(1, 2)
+        out, _ = self.lstm(x, (h0, c0))
+
+        # Pass the output of the last time step to the classifier
+        out = self.dropout(out[:, -1, :])  # Take the last time step
+        out = self.fc(out)
+
+        return out

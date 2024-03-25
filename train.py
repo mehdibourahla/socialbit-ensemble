@@ -3,7 +3,7 @@ import argparse
 from data_loader import YAMNetFeaturesDatasetEAR, YAMNetFeaturesDatasetDavid
 from sklearn.utils.class_weight import compute_class_weight
 from models import MasterModel
-from baseline import BiLSTMModel
+from baseline import BiLSTMModel, TransformerModel
 import torch
 from torch.utils.data import DataLoader
 import pandas as pd
@@ -29,8 +29,10 @@ def compute_weights(training_fold):
 def initialize_model(args, class_weights):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
-    if args.baseline:
+    if args.model == "bilstm":
         model = BiLSTMModel(class_weights_tensor=class_weights_tensor).to(device)
+    elif args.model == "transformer":
+        model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
         model = MasterModel(
             num_experts=args.num_experts,
@@ -97,7 +99,7 @@ def main(args):
         train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
     )
     torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
-    if not args.baseline:
+    if args.model == "master":
         torch.save(
             model.signature_matrix,
             os.path.join(current_output_dir, "signature_matrix.pth"),
@@ -160,7 +162,7 @@ def initialize_args(parser):
     parser.add_argument("--i_fold", type=int, help="Fold number")
     parser.add_argument("--j_subfold", type=int, help="Subfold number")
 
-    parser.add_argument("--baseline", action="store_true", help="Use Baseline model")
+    parser.add_argument("--model", type=str, required=True, help="Model to use")
     parser.add_argument("--metadata", action="store_true", help="Use metadata")
     parser.add_argument("--alpha", type=int, default=5, help="Alpha for the loss")
 

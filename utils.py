@@ -29,7 +29,7 @@ def setup_wandb(args):
         "i_fold": args.i_fold,
         "j_subfold": args.j_subfold,
         "num_experts": args.num_experts,
-        "is_baseline": args.baseline,
+        "model": args.model,
     }
     wandb.init(project="socialbit-ensemble", config=config)
 
