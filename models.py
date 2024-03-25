@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-from utils import representative_cluster, log_message, FocalLoss, EarlyStopping
+from utils import representative_cluster, log_message, EarlyStopping
 import time
 
 
@@ -390,7 +390,7 @@ class MasterModel(nn.Module):
         num_epochs=100,
         early_stopping_patience=10,
     ):
-        criterion = FocalLoss(alpha=self.class_weights_tensor, gamma=2)
+        criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
         self.signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
