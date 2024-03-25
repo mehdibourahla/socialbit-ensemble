@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import random
 from utils import representative_cluster, log_message, EarlyStopping
 import time
+from baseline import TransformerBlock
 
 
 class SharedFeatureExtractor(nn.Module):
@@ -26,27 +27,37 @@ class SharedFeatureExtractor(nn.Module):
 
 
 class ExpertModel(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(
+        self,
+        feature_length=1024,
+        num_transformers=2,
+        num_heads=8,
+        ff_dim=9,
+        mlp_units=32,
+        dropout=0.35,
+    ):
         super(ExpertModel, self).__init__()
-        self.conv1 = nn.Conv1d(
-            in_channels=256, out_channels=128, kernel_size=3, padding=1
+        self.transformers = nn.ModuleList(
+            [
+                TransformerBlock(feature_length, num_heads, ff_dim, dropout)
+                for _ in range(num_transformers)
+            ]
         )
-        self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=1)
-        self.conv2 = nn.Conv1d(
-            in_channels=128, out_channels=64, kernel_size=3, padding=1
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.mlp = nn.Sequential(
+            nn.Linear(feature_length, mlp_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_units, 2),
         )
-        self.fc = nn.Linear(64 * 3, num_classes)
-        self.shared_norm = nn.BatchNorm1d(num_features=64)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.pool(x)
-        x = F.relu(self.conv2(x))
-        x1 = self.pool(x)
-        x1 = self.shared_norm(x1)
-        x = x1.view(x1.size(0), -1)
-        x = self.fc(x)
-        return x, x1
+        for transformer in self.transformers:
+            x = transformer(x)
+        embedding = x  # Shape (N, 1024, 30)
+        x = self.pool(x).squeeze(-1)
+        x = self.mlp(x)
+        return x, embedding
 
 
 class MasterModel(nn.Module):
@@ -63,9 +74,7 @@ class MasterModel(nn.Module):
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.shared_extractor = SharedFeatureExtractor()
-        self.experts = nn.ModuleList(
-            [ExpertModel(num_classes) for _ in range(num_experts)]
-        )
+        self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
     def process_experts(self, shared_features):
         expert_outputs = torch.zeros(
@@ -77,7 +86,7 @@ class MasterModel(nn.Module):
         expert_representations = torch.zeros(
             shared_features.size(0),
             self.num_experts,
-            64 * 3,
+            1024 * 30,
             device=shared_features.device,
         )  # Adjust the size accordingly
 
@@ -127,23 +136,23 @@ class MasterModel(nn.Module):
         return similarity_weights, similarities_pos, similarities_neg
 
     def forward_train(self, x, expert_idx):
-        shared_features = self.shared_extractor(x)
-        expert_outputs, expert_representations = self.process_experts(shared_features)
+        # shared_features = self.shared_extractor(x)
+        expert_outputs, expert_representations = self.process_experts(x)
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
         for i in range(x.size(0)):
             final_output[i, :] = expert_outputs[i, expert_idx[i], :]
         return final_output, expert_representations
 
     def forward_inference(self, x):
-        shared_features = self.shared_extractor(x)
-        expert_outputs, expert_representations = self.process_experts(shared_features)
+        # shared_features = self.shared_extractor(x)
+        expert_outputs, expert_representations = self.process_experts(x)
         similarity_weights, similarities_pos, similarities_neg = (
             self.compute_similarity_weights(
                 expert_representations, self.signature_matrix
             )
         )
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(x.size(0), 64 * 3, device=x.device)
+        representations = torch.zeros(x.size(0), 1024 * 30, device=x.device)
         expert_idx = torch.argmax(similarity_weights, dim=1)
         for i in range(self.num_experts):
             final_output += expert_outputs[:, i, :] * similarity_weights[
@@ -391,9 +400,11 @@ class MasterModel(nn.Module):
         early_stopping_patience=10,
     ):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
-        self.signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
+        self.signature_matrix = torch.rand(
+            self.num_experts * 2, 1024 * 30, device=device
+        )
 
         train_losses = []
         val_losses = []
