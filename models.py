@@ -26,8 +26,9 @@ class SharedFeatureExtractor(nn.Module):
 
 
 class ExpertModel(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=2, representation_size=64 * 3):
         super(ExpertModel, self).__init__()
+        self.representation_size = representation_size
         self.conv1 = nn.Conv1d(
             in_channels=256, out_channels=128, kernel_size=3, padding=1
         )
@@ -35,7 +36,7 @@ class ExpertModel(nn.Module):
         self.conv2 = nn.Conv1d(
             in_channels=128, out_channels=64, kernel_size=3, padding=1
         )
-        self.fc = nn.Linear(self.representation_size, num_classes)
+        self.fc = nn.Linear(representation_size, num_classes)
         self.shared_norm = nn.BatchNorm1d(num_features=64)
 
     def forward(self, x):
@@ -66,7 +67,10 @@ class MasterModel(nn.Module):
         self.representation_size = representation_size
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
-            [ExpertModel(num_classes) for _ in range(num_experts)]
+            [
+                ExpertModel(num_classes, self.representation_size)
+                for _ in range(num_experts)
+            ]
         )
 
     def process_experts(self, shared_features):
