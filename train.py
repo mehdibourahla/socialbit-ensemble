@@ -38,7 +38,7 @@ def initialize_model(args, class_weights):
     elif args.model == "transformer":
         model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
-        representation_size = 64 * 3 if args.dataset == "EAR" else 64 * 4
+        representation_size = 64 * 3 if args.dataset == "EAR" else 64 * 5
         model = MasterModel(
             num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
