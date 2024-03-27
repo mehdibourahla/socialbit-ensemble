@@ -7,6 +7,39 @@ from torch.nn.functional import one_hot
 import os
 
 
+class YAMNetFeaturesSINS(Dataset):
+    # Dataset for the SINS dataset
+    def __init__(self, dataframe: pd.DataFrame):
+        self.dataframe = dataframe
+        self.filenames = dataframe.filename.tolist()
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        fpath = self.filenames[idx]
+        label = self.dataframe.iloc[idx]["is_social"]
+        domain = self.dataframe.iloc[idx]["dataset"]
+
+        try:
+            data = loadmat(fpath)["yamnet_top"]
+            data = data[:, :60]
+            if data.shape[1] < 60:
+                padding = np.zeros((data.shape[0], 60 - data.shape[1]))
+                data = np.concatenate((data, padding), axis=1)
+            data_tensor = torch.tensor(data, dtype=torch.float32)
+        except Exception as e:
+            print(f"Error loading {fpath}: {e}")
+            data_tensor = torch.tensor([], dtype=torch.float32)
+
+        label_tensor = torch.tensor([label])
+        domain_tensor = torch.tensor(domain, dtype=torch.int)
+
+        label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
+
+        return fpath, data_tensor, label_one_hot, domain_tensor
+
+
 class YAMNetFeaturesDatasetDavid(Dataset):
     def __init__(
         self,

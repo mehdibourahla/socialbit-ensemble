@@ -35,7 +35,7 @@ class ExpertModel(nn.Module):
         self.conv2 = nn.Conv1d(
             in_channels=128, out_channels=64, kernel_size=3, padding=1
         )
-        self.fc = nn.Linear(64 * 3, num_classes)
+        self.fc = nn.Linear(self.representation_size, num_classes)
         self.shared_norm = nn.BatchNorm1d(num_features=64)
 
     def forward(self, x):
@@ -56,12 +56,14 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
+        representation_size=64 * 3,
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
         self.signature_matrix = signature_matrix
         self.num_classes = num_classes
         self.num_experts = num_experts
+        self.representation_size = representation_size
         self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList(
             [ExpertModel(num_classes) for _ in range(num_experts)]
@@ -77,7 +79,7 @@ class MasterModel(nn.Module):
         expert_representations = torch.zeros(
             shared_features.size(0),
             self.num_experts,
-            64 * 3,
+            self.representation_size,
             device=shared_features.device,
         )  # Adjust the size accordingly
 
@@ -143,7 +145,9 @@ class MasterModel(nn.Module):
             )
         )
         final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(x.size(0), 64 * 3, device=x.device)
+        representations = torch.zeros(
+            x.size(0), self.representation_size, device=x.device
+        )
         expert_idx = torch.argmax(similarity_weights, dim=1)
         for i in range(self.num_experts):
             final_output += expert_outputs[:, i, :] * similarity_weights[
@@ -393,7 +397,9 @@ class MasterModel(nn.Module):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
-        self.signature_matrix = torch.rand(self.num_experts * 2, 64 * 3, device=device)
+        self.signature_matrix = torch.rand(
+            self.num_experts * 2, self.representation_size, device=device
+        )
 
         train_losses = []
         val_losses = []

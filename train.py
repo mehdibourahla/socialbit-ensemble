@@ -1,6 +1,10 @@
 import os
 import argparse
-from data_loader import YAMNetFeaturesDatasetEAR, YAMNetFeaturesDatasetDavid
+from data_loader import (
+    YAMNetFeaturesDatasetEAR,
+    YAMNetFeaturesDatasetDavid,
+    YAMNetFeaturesSINS,
+)
 from sklearn.utils.class_weight import compute_class_weight
 from models import MasterModel
 from baseline import BiLSTMModel, TransformerModel
@@ -34,30 +38,35 @@ def initialize_model(args, class_weights):
     elif args.model == "transformer":
         model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
+        representation_size = 64 * 3 if args.dataset == "EAR" else 64 * 4
         model = MasterModel(
             num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
+            representation_size=representation_size,
         ).to(device)
     return model, device
 
 
-def get_data_loaders(training_fold, validation_fold, test_fold):
+def get_data_loaders(dataset, training_fold, validation_fold, test_fold):
+    dataloader_class = (
+        YAMNetFeaturesDatasetEAR if dataset == "EAR" else YAMNetFeaturesSINS
+    )
     train_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(training_fold),
+        dataloader_class(training_fold),
         batch_size=32,
         shuffle=True,
         num_workers=8,
     )
     val_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(validation_fold),
+        dataloader_class(validation_fold),
         batch_size=32,
-        shuffle=True,
+        shuffle=False,
         num_workers=8,
     )
     test_gen = DataLoader(
-        YAMNetFeaturesDatasetEAR(test_fold),
+        dataloader_class(test_fold),
         batch_size=32,
-        shuffle=True,
+        shuffle=False,
         num_workers=8,
     )
     return train_gen, val_gen, test_gen
@@ -88,7 +97,7 @@ def main(args):
 
     # Get loaders Train the model
     train_gen, val_gen, test_gen = get_data_loaders(
-        training_fold, validation_fold, test_fold
+        args.dataset, training_fold, validation_fold, test_fold
     )
     train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
         train_gen, val_gen, device, current_output_dir
@@ -107,9 +116,9 @@ def main(args):
     _, accuracy, sensitivity, specificity, _ = model.evaluate(test_gen, device)
     log_message(
         {
-            "EAR_Accuracy": accuracy,
-            "EAR_Sensitivity": sensitivity,
-            "EAR_Specificity": specificity,
+            f"{args.dataset}_Accuracy": accuracy,
+            f"{args.dataset}_Sensitivity": sensitivity,
+            f"{args.dataset}_Specificity": specificity,
         }
     )
 
@@ -137,6 +146,7 @@ def initialize_args(parser):
     parser.add_argument("--wandb_key", type=str, help="Wandb API key")
     parser.add_argument("--commit_id", type=str, help="Commit ID")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
+    parser.add_argument("--dataset", type=str, required=True, help="Dataset to use")
     parser.add_argument(
         "--num_experts",
         type=int,
