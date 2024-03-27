@@ -45,6 +45,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         self,
         dataframe: pd.DataFrame,
         data_dir: str,
+        seq_len: int = 30,
     ):
         """
         Initializes the dataset.
@@ -55,6 +56,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         self.data_dir = data_dir
         # Ensure the DataFrame index is a list for easy access
         self.filenames = dataframe.filename.tolist()
+        self.seq_len = seq_len
 
     def __len__(self):
         return len(self.dataframe)
@@ -70,10 +72,10 @@ class YAMNetFeaturesDatasetDavid(Dataset):
             # Load the feature data from the file
             data = loadmat(fpath)["yamnet_top"]
             # Limit the number of features to 30
-            data = data[:, :30]
-            if data.shape[1] < 30:
+            data = data[:, : self.seq_len]
+            if data.shape[1] < self.seq_len:
                 # If the segment is shorter than 30 seconds, pad the rest with zeros
-                padding = np.zeros((data.shape[0], 30 - data.shape[1]))
+                padding = np.zeros((data.shape[0], self.seq_len - data.shape[1]))
                 data = np.concatenate((data, padding), axis=1)
             # Convert the loaded data to a tensor
             data_tensor = torch.tensor(data, dtype=torch.float32)

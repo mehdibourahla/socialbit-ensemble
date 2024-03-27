@@ -124,8 +124,11 @@ def main(args):
 
     # Evaluate on external test data
     ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
+    seq_len = 30 if args.dataset == "EAR" else 60
     ext_test_gen = DataLoader(
-        YAMNetFeaturesDatasetDavid(ext_test_df, args.ext_test_data_dir),
+        YAMNetFeaturesDatasetDavid(
+            ext_test_df, args.ext_test_data_dir, seq_len=seq_len
+        ),
         batch_size=32,
         shuffle=False,
         num_workers=8,
