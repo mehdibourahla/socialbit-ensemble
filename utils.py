@@ -77,6 +77,7 @@ def representative_cluster(X, check=False):
 
     for expert_index, expert in enumerate(X):
         # Compute intra-cluster distances once
+
         pairwise_distances = squareform(pdist(expert, "cosine"))
         intra_cluster_distances = pairwise_distances.sum(axis=0)
 
@@ -97,7 +98,7 @@ def representative_cluster(X, check=False):
         medoid_index = np.argmin(score)
         medoids.append(expert[medoid_index])
 
-    # medoids = np.array(medoids)
+    medoids = torch.tensor(medoids, dtype=torch.float32)
 
     # Optional: Check the distance between medoids
     if check:

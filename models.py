@@ -6,48 +6,105 @@ from utils import representative_cluster, log_message, EarlyStopping
 import time
 
 
-class SharedFeatureExtractor(nn.Module):
-    def __init__(self):
-        super(SharedFeatureExtractor, self).__init__()
-        self.conv1 = nn.Conv1d(
-            in_channels=1024, out_channels=512, kernel_size=3, padding=1
-        )
-        self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=1)
-        self.conv2 = nn.Conv1d(
-            in_channels=512, out_channels=256, kernel_size=3, padding=1
-        )
+class TemporalConvNet(nn.Module):
+    def __init__(self, num_inputs, num_channels, kernel_size=3, dropout=0.2):
+        super(TemporalConvNet, self).__init__()
+        layers = []
+        num_levels = len(num_channels)
+        for i in range(num_levels):
+            dilation_size = 2**i
+            in_channels = num_inputs if i == 0 else num_channels[i - 1]
+            out_channels = num_channels[i]
+            layers += [
+                nn.Conv1d(
+                    in_channels,
+                    out_channels,
+                    kernel_size,
+                    stride=1,
+                    padding=dilation_size,
+                    dilation=dilation_size,
+                ),
+                nn.BatchNorm1d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            ]
+        self.network = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.pool(x)
-        x = F.relu(self.conv2(x))
-        x = self.pool(x)
-        return x
+        return self.network(x)
+
+
+class ScaledDotProductAttention(nn.Module):
+    def __init__(self, scale):
+        super(ScaledDotProductAttention, self).__init__()
+        self.scale = scale
+
+    def forward(self, query, key, value):
+        attention = torch.matmul(query, key.transpose(-2, -1)) / self.scale
+        attention = F.softmax(attention, dim=-1)
+        return torch.matmul(attention, value)
+
+
+class SharedFeatureExtractor(nn.Module):
+    def __init__(
+        self,
+        input_size=1024,
+        seq_length=30,
+        num_channels=[512, 256],
+        kernel_size=3,
+        dropout=0.25,
+    ):
+        super(SharedFeatureExtractor, self).__init__()
+        self.temporal_conv_net = TemporalConvNet(
+            input_size, num_channels, kernel_size, dropout
+        )
+        self.attention = ScaledDotProductAttention(scale=seq_length**0.5)
+
+    def forward(self, x):
+        # Input x shape: (batch, features, seq_length)
+        conv_output = self.temporal_conv_net(x)  # Apply Temporal Convolution
+        # Attention expects (batch, seq_length, features), so transpose conv_output
+        conv_output = conv_output.transpose(
+            1, 2
+        )  # Now shape: (batch, seq_length, features)
+        attention_output = self.attention(
+            conv_output, conv_output, conv_output
+        )  # Self-attention
+        attention_output = attention_output.transpose(1, 2)
+        return attention_output
 
 
 class ExpertModel(nn.Module):
-    def __init__(self, num_classes=2, representation_size=64 * 3):
+    def __init__(
+        self,
+        input_size=1024,
+        seq_length=30,
+        num_channels=[512, 256, 128, 64],
+        kernel_size=3,
+        dropout=0.25,
+    ):
         super(ExpertModel, self).__init__()
-        self.representation_size = representation_size
-        self.conv1 = nn.Conv1d(
-            in_channels=256, out_channels=128, kernel_size=3, padding=1
+        self.temporal_conv_net = TemporalConvNet(
+            input_size, num_channels, kernel_size, dropout
         )
-        self.pool = nn.MaxPool1d(kernel_size=2, stride=2, padding=1)
-        self.conv2 = nn.Conv1d(
-            in_channels=128, out_channels=64, kernel_size=3, padding=1
-        )
-        self.fc = nn.Linear(representation_size, num_classes)
-        self.shared_norm = nn.BatchNorm1d(num_features=64)
+        self.attention = ScaledDotProductAttention(scale=seq_length**0.5)
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(num_channels[-1], 2)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.pool(x)
-        x = F.relu(self.conv2(x))
-        x1 = self.pool(x)
-        x1 = self.shared_norm(x1)
-        x = x1.view(x1.size(0), -1)
-        x = self.fc(x)
-        return x, x1
+        # Input x shape: (batch, features, seq_length)
+        conv_output = self.temporal_conv_net(x)  # Apply Temporal Convolution
+        # Attention expects (batch, seq_length, features), so transpose conv_output
+        conv_output = conv_output.transpose(
+            1, 2
+        )  # Now shape: (batch, seq_length, features)
+        attention_output = self.attention(
+            conv_output, conv_output, conv_output
+        )  # Self-attention
+        attention_output = attention_output.transpose(1, 2)
+        embedding = self.avg_pool(attention_output)
+        output = self.fc(embedding.squeeze(-1))
+        return output, embedding
 
 
 class MasterModel(nn.Module):
@@ -57,7 +114,8 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
-        representation_size=64 * 3,
+        representation_size=64,
+        alpha=0.5,
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
@@ -65,13 +123,10 @@ class MasterModel(nn.Module):
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.representation_size = representation_size
+        self.alpha = alpha
+        self.beta = 1 - alpha
         self.shared_extractor = SharedFeatureExtractor()
-        self.experts = nn.ModuleList(
-            [
-                ExpertModel(num_classes, self.representation_size)
-                for _ in range(num_experts)
-            ]
-        )
+        self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
     def process_experts(self, shared_features):
         expert_outputs = torch.zeros(
@@ -90,7 +145,7 @@ class MasterModel(nn.Module):
         for i, expert in enumerate(self.experts):
             output, representation = expert(shared_features)
             expert_outputs[:, i, :] = output
-            expert_representations[:, i, :] = representation.view(
+            expert_representations[:, i, :] = representation.reshape(
                 shared_features.size(0), -1
             )  # Flatten the representation
 
@@ -133,36 +188,54 @@ class MasterModel(nn.Module):
         return similarity_weights, similarities_pos, similarities_neg
 
     def forward_train(self, x, expert_idx):
-        shared_features = self.shared_extractor(x)
-        expert_outputs, expert_representations = self.process_experts(shared_features)
-        final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        # shared_features = self.shared_extractor(x)
+        expert_outputs, expert_representations = self.process_experts(x)
+        output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        representation = torch.zeros(
+            x.size(0), self.representation_size, device=x.device
+        )
+        newbie_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+
+        # Get the expert output
         for i in range(x.size(0)):
-            final_output[i, :] = expert_outputs[i, expert_idx[i], :]
-        return final_output, expert_representations
+            output[i, :] = expert_outputs[i, expert_idx[i], :]
+            representation[i, :] = expert_representations[i, expert_idx[i], :]
+
+        # Get the newbie output
+        for i in range(self.num_experts):
+            mask = expert_idx != i
+            newbie_output[mask, :] += expert_outputs[mask, i, :]
+        newbie_output = newbie_output / (self.num_experts - 1)
+
+        return output, newbie_output, representation, expert_representations
 
     def forward_inference(self, x):
-        shared_features = self.shared_extractor(x)
-        expert_outputs, expert_representations = self.process_experts(shared_features)
+        # shared_features = self.shared_extractor(x)
+        expert_outputs, expert_representations = self.process_experts(x)
+        output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        newbie_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+
         similarity_weights, similarities_pos, similarities_neg = (
             self.compute_similarity_weights(
                 expert_representations, self.signature_matrix
             )
         )
-        final_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        representations = torch.zeros(
-            x.size(0), self.representation_size, device=x.device
-        )
+
+        # Get the most similar expert output
         expert_idx = torch.argmax(similarity_weights, dim=1)
+        for i in range(x.size(0)):
+            output[i, :] = expert_outputs[i, expert_idx[i], :]
+
+        # Get the newbie output
         for i in range(self.num_experts):
-            final_output += expert_outputs[:, i, :] * similarity_weights[
-                :, i
-            ].unsqueeze(1)
-            representations += expert_representations[:, i, :] * similarity_weights[
-                :, i
-            ].unsqueeze(1)
+            mask = expert_idx != i
+            newbie_output[mask, :] += expert_outputs[mask, i, :]
+        newbie_output = newbie_output / (self.num_experts - 1)
+
         return (
-            final_output,
-            representations,
+            output,
+            expert_representations,
+            newbie_output,
             expert_idx,
             similarity_weights,
             similarities_pos,
@@ -242,16 +315,6 @@ class MasterModel(nn.Module):
         return loss
 
     def update_signature_matrix(self, pos_representations, neg_representations, device):
-        for idx in range(self.num_experts):
-            min_pos_len = min([len(reps) for reps in pos_representations])
-            min_neg_len = min([len(reps) for reps in neg_representations])
-
-            # Cut the list of representations to the minimum length
-            pos_representations[idx] = pos_representations[idx][:min_pos_len]
-            pos_representations[idx] = neg_representations[idx][:min_neg_len]
-
-            pos_representations[idx] = torch.stack(pos_representations[idx])
-            neg_representations[idx] = torch.stack(neg_representations[idx])
 
         pos_medoids = representative_cluster(pos_representations)
         neg_medoids = representative_cluster(neg_representations)
@@ -276,11 +339,10 @@ class MasterModel(nn.Module):
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
             optimizer.zero_grad()
-            outputs, representations = self.forward_train(
+            outputs, newbie, representations, all_representations = self.forward_train(
                 inputs_x,
                 domains_x,
             )
-
             # Separate positive and negative embeddings for clustering
             pos_labels = labels_x[:, 1] > 0.5
             neg_labels = ~pos_labels
@@ -289,28 +351,29 @@ class MasterModel(nn.Module):
                 mask_pos = (domains_x == idx) & pos_labels
                 mask_neg = (domains_x == idx) & neg_labels
                 if mask_pos.any():
-                    sampled_pos_representations = representations[
-                        mask_pos, idx, :
-                    ].detach()
+                    sampled_pos_representations = (
+                        representations[mask_pos, :].detach().cpu().numpy().tolist()
+                    )
                     pos_representations_for_clustering[idx].extend(
                         sampled_pos_representations
                     )
 
                 if mask_neg.any():
-                    sampled_neg_representations = representations[
-                        mask_neg, idx, :
-                    ].detach()
+                    sampled_neg_representations = (
+                        representations[mask_neg, :].detach().cpu().numpy().tolist()
+                    )
 
                     neg_representations_for_clustering[idx].extend(
                         sampled_neg_representations
                     )
 
             triplet_loss = self.contrastive_loss(
-                representations, domains_x, labels_x[:, 1]
+                all_representations, domains_x, labels_x[:, 1]
             )
             bce_loss = criterion(outputs, labels_x.float())
+            loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
 
-            loss = bce_loss + triplet_loss
+            loss = bce_loss + triplet_loss + loss_cr
             loss.backward()
             optimizer.step()
 
@@ -352,16 +415,17 @@ class MasterModel(nn.Module):
                 _, inputs_x, labels_x, domains_x = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                outputs, representations, _, _, _, _ = self.forward_inference(
+                outputs, representations, newbie, _, _, _, _ = self.forward_inference(
                     inputs_x,
                 )
 
                 if criterion is not None:
+                    loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
                     bce_loss = criterion(outputs, labels_x.float()).item()
                     triplet_loss = self.contrastive_loss(
                         representations, domains_x, labels_x[:, 1]
                     ).item()
-                    loss += bce_loss + triplet_loss
+                    loss += bce_loss + triplet_loss + loss_cr
 
                 probs = torch.sigmoid(outputs)
                 preds = (probs > 0.5).float()

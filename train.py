@@ -38,11 +38,10 @@ def initialize_model(args, class_weights):
     elif args.model == "transformer":
         model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
-        representation_size = 64 * 3 if args.dataset == "EAR" else 64 * 5
         model = MasterModel(
             num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
-            representation_size=representation_size,
+            alpha=args.alpha,
         ).to(device)
     return model, device
 
@@ -177,7 +176,7 @@ def initialize_args(parser):
 
     parser.add_argument("--model", type=str, required=True, help="Model to use")
     parser.add_argument("--metadata", action="store_true", help="Use metadata")
-    parser.add_argument("--alpha", type=int, default=5, help="Alpha for the loss")
+    parser.add_argument("--alpha", type=float, default=0.5, help="Alpha for the loss")
 
 
 if __name__ == "__main__":
