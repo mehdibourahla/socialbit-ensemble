@@ -114,12 +114,14 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
+        similarity_matrix=None,
         representation_size=64,
         alpha=0.5,
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
         self.signature_matrix = signature_matrix
+        self.similarity_matrix = similarity_matrix
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.representation_size = representation_size
@@ -393,6 +395,39 @@ class MasterModel(nn.Module):
         )
         epoch_end_training = time.time()
 
+        expert_gradients = [[] for _ in range(self.num_experts)]
+        for i, expert in enumerate(self.experts):
+            expert_gradients[i].append(
+                [param.grad.clone() for param in expert.parameters()]
+            )
+            expert_gradients[i] = expert_gradients[i][0]
+
+        normalized_gradients = []
+        for model_gradients in expert_gradients:
+            flat_gradients = [torch.flatten(grad) for grad in model_gradients]
+            norms = [grad.norm() for grad in flat_gradients]
+            normalized_gradients.append(
+                [grad / norm for grad, norm in zip(flat_gradients, norms)]
+            )
+
+        self.similarity_matrix = torch.zeros(self.num_experts, self.num_experts)
+
+        for i in range(self.num_experts):
+            for j in range(i, self.num_experts):
+                if i == j:
+                    self.similarity_matrix[i, j] = 1.0
+                else:
+                    similarity_ij = sum(
+                        torch.cosine_similarity(
+                            normalized_gradients[i][k],
+                            normalized_gradients[j][k],
+                            dim=0,
+                        )
+                        for k in range(len(normalized_gradients[i]))
+                    )
+                    self.similarity_matrix[i, j] = similarity_ij
+                    self.similarity_matrix[j, i] = similarity_ij
+
         return train_loss, train_accuracy, epoch_end_training - epoch_start_training
 
     def evaluate(
@@ -410,34 +445,35 @@ class MasterModel(nn.Module):
         correct = 0
         total = 0
         epoch_start_validation = time.time()
-        with torch.no_grad():
-            for i, batch_x in enumerate(data_loader):
-                _, inputs_x, labels_x, domains_x = batch_x
-                inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+        for i, batch_x in enumerate(data_loader):
+            _, inputs_x, labels_x, domains_x = batch_x
+            inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                outputs, representations, newbie, _, _, _, _ = self.forward_inference(
-                    inputs_x,
-                )
+            inputs_x.requires_grad = True
 
-                if criterion is not None:
-                    loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
-                    bce_loss = criterion(outputs, labels_x.float()).item()
-                    triplet_loss = self.contrastive_loss(
-                        representations, domains_x, labels_x[:, 1]
-                    ).item()
-                    loss += bce_loss + triplet_loss + loss_cr
+            outputs, representations, newbie, _, _, _, _ = self.forward_inference(
+                inputs_x,
+            )
 
-                probs = torch.sigmoid(outputs)
-                preds = (probs > 0.5).float()
+            if criterion is not None:
+                loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
+                bce_loss = criterion(outputs, labels_x.float()).item()
+                triplet_loss = self.contrastive_loss(
+                    representations, domains_x, labels_x[:, 1]
+                ).item()
+                loss += bce_loss + triplet_loss + loss_cr
 
-                # Compute confusion matrix components
-                TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
-                TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
-                FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
-                FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+            probs = torch.sigmoid(outputs)
+            preds = (probs > 0.5).float()
 
-                correct += (preds == labels_x).float().sum().item()
-                total += labels_x.numel()
+            # Compute confusion matrix components
+            TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
+            TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
+            FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
+            FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+
+            correct += (preds == labels_x).float().sum().item()
+            total += labels_x.numel()
         epoch_end_validation = time.time()
 
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
