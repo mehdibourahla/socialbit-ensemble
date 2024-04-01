@@ -2,9 +2,6 @@ import torch.nn as nn
 import torch
 from utils import log_message, EarlyStopping
 import time
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-import torch.nn.functional as F
-import math
 
 
 class BaselineModel(nn.Module):
