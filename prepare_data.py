@@ -1,70 +1,6 @@
-# This script aims to create the Training, Validation and Test datasets from EAR dataset.
-# The dataset is divided into 3 parts: Training (70%), Validation (15%) and Test (15%).
-# Each dataset is first preprocessed to remove unwanted records.
-
 import pandas as pd
 import argparse
 import os
-import numpy as np
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
-from scipy.io import loadmat
-
-
-def load_features(dataframe):
-    filenames = dataframe["filename"].tolist()
-    features = []
-    for filename in filenames:
-        data = loadmat(filename)["yamnet_top"]
-        data = data[:, :30]
-        if data.shape[1] < 30:
-            padding = np.zeros((data.shape[0], 30 - data.shape[1]))
-            data = np.concatenate((data, padding), axis=1)
-        features.append(data)
-    return filenames, np.stack(features)
-
-
-def create_domains(dataframe, output_dir, dataset_name, num_clusters):
-    filenames, data = load_features(dataframe)
-    data_reshaped = data.reshape(-1, 1024 * 30)
-
-    # Normalize the embeddings
-    scaler = StandardScaler()
-    normalized_embeddings = scaler.fit_transform(data_reshaped)
-
-    # Apply PCA to reduce the dimensionality to 50
-    pca = PCA(n_components=50, random_state=42)
-    data_pca = pca.fit_transform(normalized_embeddings)
-
-    # Apply KMeans to cluster the data into 5 clusters
-    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
-    clusters = kmeans.fit_predict(data_pca)
-
-    # Apply TSNE to reduce the dimensionality to 2 for visualization
-    tsne_results = TSNE(
-        n_components=2, random_state=42, learning_rate="auto", init="random"
-    ).fit_transform(data_pca)
-
-    # Visualize the clusters using a scatter plot
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(
-        tsne_results[:, 0], tsne_results[:, 1], c=clusters, s=5, cmap="rainbow"
-    )
-    plt.title("t-SNE visualization of YAMNet embeddings after KMeans clustering")
-    plt.xlabel("t-SNE 1")
-    plt.ylabel("t-SNE 2")
-    plt.colorbar(scatter)  # Show color scale
-    plt.savefig(os.path.join(output_dir, f"tsne_clusters_{dataset_name}.png"))
-
-    filename_cluster_map = {
-        filename: cluster for filename, cluster in zip(filenames, clusters)
-    }
-
-    return filename_cluster_map
 
 
 def normalize_columns(data, columns):
@@ -76,7 +12,6 @@ def normalize_columns(data, columns):
 
 def process_dataset(df, args, dataset_name):
     data_dir = args.features_dse if dataset_name == "dse" else args.features_aging
-    output_dir = args.output_dir
     num_clusters = args.num_clusters
 
     df.columns = map(str.lower, df.columns)
@@ -108,23 +43,47 @@ def process_dataset(df, args, dataset_name):
     df = df[df["problems"] == 0]
 
     # Add label for social interaction "is_social"
-    # Records with 'talk' == 1 and 'self' == 0 and ('w/ one person' == 1 or 'w/ multiple people' == 1 or phone == 1)
-    df["is_social"] = (
-        (df["talk"] == 1)
-        # & (df["self"] == 0)
-        # & ((df["withone"] == 1) | (df["withgroup"] == 1) | (df["phone"] == 1))
-    ).astype(int)
+    df["is_social"] = ((df["talk"] == 1)).astype(int)
 
-    # filename_cluster_map = create_domains(df, output_dir, dataset_name, num_clusters)
-    # Add a new column to the dataset to indicate the dataset name
-    # df["dataset"] = df["filename"].map(filename_cluster_map)
-    # df["dataset"] = dataset_name + "_" + df["dataset"].astype(str)
+    # Add the dataset name
     df["dataset"] = dataset_name
 
-    # Update the participant_id with the dataset name as prefix
-    df["participant_id"] = dataset_name + "_" + df["participant_id"].astype(str)
+    # Split the dataset into num_clusters
+    samples_per_participant = df.groupby("participant_id").size()
+    participants_sorted = samples_per_participant.sort_values(ascending=False)
+    splits = {i: [] for i in range(num_clusters)}  # Track participants per split
+    samples_count_per_split = {
+        i: 0 for i in range(num_clusters)
+    }  # Track samples per split
 
-    return df
+    for participant_id, sample_count in participants_sorted.items():
+        # Find the split with the minimum number of samples
+        min_samples_split = min(
+            samples_count_per_split, key=samples_count_per_split.get
+        )
+
+        # Allocate this participant to that split
+        splits[min_samples_split].append(participant_id)
+        samples_count_per_split[min_samples_split] += sample_count
+
+    split_datasets = {}
+    for i in range(num_clusters):
+        split_datasets[i] = df[df["participant_id"].isin(splits[i])]
+
+    final_datasets = {}
+    for i in range(num_clusters):
+        final_datasets[i] = split_datasets[i]
+        final_datasets[i]["dataset"] = final_datasets[i]["dataset"] + "_" + str(i)
+
+    # Merge the splits
+    final_dataset = merge_datasets(list(final_datasets.values()))
+
+    # Update the participant_id with the dataset name as prefix
+    final_dataset["participant_id"] = (
+        final_dataset["dataset"] + "_" + final_dataset["participant_id"].astype(str)
+    )
+
+    return final_dataset
 
 
 def merge_datasets(dfs):
@@ -147,26 +106,6 @@ def analyze_dataset(df):
     )
 
 
-def split_dataset(df, test_size=0.3, random_state=42):
-    # Split participants
-    gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-    train_idx, test_val_idx = next(gss.split(df, groups=df["participant_id"]))
-
-    train_data = df.iloc[train_idx]
-    test_val_data = df.iloc[test_val_idx]
-
-    # Further split test_val_data into validation and test sets
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.5, random_state=random_state)
-    val_idx, test_idx = next(
-        gss.split(test_val_data, groups=test_val_data["participant_id"])
-    )
-
-    validation_data = test_val_data.iloc[val_idx]
-    test_data = test_val_data.iloc[test_idx]
-
-    return train_data, validation_data, test_data
-
-
 def main(args):
     args.output_dir = f"{args.output_dir}_{args.num_clusters}"
     os.makedirs(args.output_dir, exist_ok=True)
@@ -184,26 +123,16 @@ def main(args):
     # Analyze the dataset
     analyze_dataset(df)
 
-    # Split the dataset
-    train_data, val_data, test_data = split_dataset(df)
-
-    # Analyze each split
-    print("Training dataset:")
-    analyze_dataset(train_data)
-    print("\nValidation dataset:")
-    analyze_dataset(val_data)
-    print("\nTest dataset:")
-    analyze_dataset(test_data)
-
-    # Save the datasets
-    train_data.to_csv(os.path.join(args.output_dir, "train.csv"))
-    val_data.to_csv(os.path.join(args.output_dir, "val.csv"))
-    test_data.to_csv(os.path.join(args.output_dir, "test.csv"))
+    # Save the dataset
+    df.to_csv(os.path.join(args.output_dir, "dse_aging.csv"))
 
 
 def initialize_args(parser):
     parser.add_argument(
-        "--num_clusters", default=2, type=int, help="Number of clusters for KMeans"
+        "--num_clusters",
+        default=2,
+        type=int,
+        help="Number of clusters to split the data into",
     )
     parser.add_argument(
         "--features_dse",
