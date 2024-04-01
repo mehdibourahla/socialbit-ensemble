@@ -105,6 +105,7 @@ def main(args):
 
         # Save model and log results
         result_dir = os.path.join(current_output_dir, f"expert_{expert_idx}")
+        os.makedirs(result_dir, exist_ok=True)
         plot_training_curves(
             train_losses,
             val_losses,
