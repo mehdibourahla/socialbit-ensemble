@@ -412,20 +412,18 @@ class MasterModel(nn.Module):
         epoch_start_validation = time.time()
         with torch.no_grad():
             for i, batch_x in enumerate(data_loader):
-                _, inputs_x, labels_x, domains_x = batch_x
+                _, inputs_x, labels_x, _ = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                outputs, representations, newbie, _, _, _, _ = self.forward_inference(
+                outputs, _, newbie, _, _, _, _ = self.forward_inference(
                     inputs_x,
                 )
 
                 if criterion is not None:
                     loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
                     bce_loss = criterion(outputs, labels_x.float()).item()
-                    triplet_loss = self.contrastive_loss(
-                        representations, domains_x, labels_x[:, 1]
-                    ).item()
-                    loss += bce_loss + triplet_loss + loss_cr
+
+                    loss += bce_loss + loss_cr
 
                 probs = torch.sigmoid(outputs)
                 preds = (probs > 0.5).float()

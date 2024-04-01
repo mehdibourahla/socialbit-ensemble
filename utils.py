@@ -314,14 +314,22 @@ def setup_directories(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
 
-def load_and_prepare_data(data_dir, i_fold, j_subfold, num_folds=5):
-    train_data, val_data, test_data = load_csv_files(data_dir)
-    data = pd.concat([train_data, val_data, test_data])
-    fold_size = len(data) // num_folds
-    folds = [data[i * fold_size : (i + 1) * fold_size] for i in range(num_folds)]
-    test_fold = folds[i_fold]
-    validation_fold = folds[j_subfold]
-    training_fold = pd.concat(
-        folds[i] for i in range(num_folds) if i not in [i_fold, j_subfold]
-    )
+def load_and_prepare_data(file_path, i_fold, j_subfold):
+    df = pd.read_csv(file_path)
+    # Encode the 'dataset' column as categorical codes
+    df["dataset"] = pd.Categorical(df["dataset"]).codes
+
+    test_fold = df[(df["dataset"] == i_fold) | (df["dataset"] == i_fold + 5)]
+
+    validation_fold = df[
+        (df["dataset"] == j_subfold) | (df["dataset"] == j_subfold + 5)
+    ]
+
+    training_fold = df[
+        ~df["dataset"].isin([i_fold, i_fold + 5, j_subfold, j_subfold + 5])
+    ]
+
+    # Transform training_fold dataset to 0-7
+    training_fold["dataset"] = pd.Categorical(training_fold["dataset"]).codes
+
     return training_fold, validation_fold, test_fold
