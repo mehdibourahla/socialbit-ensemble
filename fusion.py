@@ -17,12 +17,29 @@ import torch
 from data_loader import YAMNetFeaturesDatasetDavid
 
 
+def compute_metrics(preds, labels):
+    probs = torch.sigmoid(torch.tensor(preds)).numpy()
+    preds = (probs > 0.5).astype(int)
+
+    # Calculate metrics
+    TP = np.sum((preds == 1) & (labels == 1))
+    TN = np.sum((preds == 0) & (labels == 0))
+    FP = np.sum((preds == 1) & (labels == 0))
+    FN = np.sum((preds == 0) & (labels == 1))
+
+    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
+    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
+    accuracy = (TP + TN) / (TP + TN + FP + FN)
+
+    return accuracy, sensitivity, specificity
+
+
 def fusion(models, test_gen, device):
     all_predictions = []
     all_labels = []
 
     # Iterate over models to collect their predictions
-    for model in models:
+    for idx, model in enumerate(models):
         model.to(device)
         model_predictions = []
         model.eval()
@@ -34,23 +51,18 @@ def fusion(models, test_gen, device):
                 model_predictions.append(outputs.cpu().numpy())
                 if model is models[0]:  # Collect labels only once
                     all_labels.append(labels.numpy())
-
+        accuracy, sensitivity, specificity = compute_metrics(
+            np.concatenate(model_predictions, axis=0), labels.numpy()
+        )
+        print(
+            f"Expert_{idx} | Accuracy: {accuracy}, Sensitivity: {sensitivity}, Specificity: {specificity}"
+        )
         all_predictions.append(np.concatenate(model_predictions, axis=0))
 
     all_labels = np.concatenate(all_labels, axis=0)
     fused_predictions = np.mean(all_predictions, axis=0)  # Average predictions
-    probs = torch.sigmoid(torch.tensor(fused_predictions)).numpy()
-    preds = (probs > 0.5).astype(int)
 
-    # Calculate metrics
-    TP = np.sum((preds == 1) & (all_labels == 1))
-    TN = np.sum((preds == 0) & (all_labels == 0))
-    FP = np.sum((preds == 1) & (all_labels == 0))
-    FN = np.sum((preds == 0) & (all_labels == 1))
-
-    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
-    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-    accuracy = (TP + TN) / (TP + TN + FP + FN)
+    accuracy, sensitivity, specificity = compute_metrics(fused_predictions, all_labels)
 
     return accuracy, sensitivity, specificity
 
@@ -101,42 +113,11 @@ def main(args):
             result_dir,
         )
         torch.save(model.state_dict(), os.path.join(result_dir, "model.pth"))
-        _, accuracy, sensitivity, specificity, _ = model.evaluate(test_gen, device)
-        log_message(
-            {
-                f"Expert_{expert_idx}": {
-                    f"{args.dataset}_Accuracy": accuracy,
-                    f"{args.dataset}_Sensitivity": sensitivity,
-                    f"{args.dataset}_Specificity": specificity,
-                }
-            }
-        )
-
-        # Evaluate on external test data
-        ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
-        seq_len = 30 if args.dataset == "EAR" else 60
-        ext_test_gen = DataLoader(
-            YAMNetFeaturesDatasetDavid(
-                ext_test_df, args.ext_test_data_dir, seq_len=seq_len
-            ),
-            batch_size=32,
-            shuffle=False,
-            num_workers=8,
-        )
-        _, accuracy, sensitivity, specificity, _ = model.evaluate(ext_test_gen, device)
-        log_message(
-            {
-                f"Expert_{expert_idx}": {
-                    "LAB_Accuracy": accuracy,
-                    "LAB_Sensitivity": sensitivity,
-                    "LAB_Specificity": specificity,
-                }
-            }
-        )
 
         models.append(model)
 
     # Evaluate Fusion on test data
+    print("Evaluating Fusion on test data...")
     accuracy, sensitivity, specificity = fusion(models, test_gen, device)
     log_message(
         {
@@ -146,6 +127,18 @@ def main(args):
         }
     )
 
+    # Evaluate on external test data
+    ext_test_df = pd.read_csv(os.path.join(args.ext_test_data_dir, "metadata.csv"))
+    seq_len = 30 if args.dataset == "EAR" else 60
+    ext_test_gen = DataLoader(
+        YAMNetFeaturesDatasetDavid(
+            ext_test_df, args.ext_test_data_dir, seq_len=seq_len
+        ),
+        batch_size=32,
+        shuffle=False,
+        num_workers=8,
+    )
+    print("Evaluating on external test data...")
     accuracy, sensitivity, specificity = fusion(models, ext_test_gen, device)
     log_message(
         {
