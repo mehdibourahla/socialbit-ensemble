@@ -88,7 +88,6 @@ def process_dataset(df, args, dataset_name):
 
 def merge_datasets(dfs):
     dfs = pd.concat(dfs)
-    dfs.set_index("filename", inplace=True)
     return dfs
 
 
@@ -119,6 +118,7 @@ def main(args):
 
     # Merge the datasets
     df = merge_datasets([df_dse, df_aging])
+    df.set_index("filename", inplace=True)
 
     # Analyze the dataset
     analyze_dataset(df)
