@@ -87,17 +87,17 @@ def main(args):
     models = []
     for expert_idx in range(args.num_experts):
         # Select the training_fold
-        training_fold = training_fold[training_fold["dataset"] == expert_idx]
+        training_fold_idx = training_fold[training_fold["dataset"] == expert_idx]
 
         # Compute class weights
-        class_weights = compute_weights(training_fold)
+        class_weights = compute_weights(training_fold_idx)
 
         # Initialize model and device
         model, device = initialize_model(args, class_weights)
 
         # Get loaders Train the model
         train_gen, val_gen, test_gen = get_data_loaders(
-            args.dataset, training_fold, validation_fold, test_fold
+            args.dataset, training_fold_idx, validation_fold, test_fold
         )
         train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
             train_gen, val_gen, device, current_output_dir
