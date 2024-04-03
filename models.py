@@ -6,105 +6,46 @@ from utils import representative_cluster, log_message, EarlyStopping
 import time
 
 
-class TemporalConvNet(nn.Module):
-    def __init__(self, num_inputs, num_channels, kernel_size=3, dropout=0.2):
-        super(TemporalConvNet, self).__init__()
-        layers = []
-        num_levels = len(num_channels)
-        for i in range(num_levels):
-            dilation_size = 2**i
-            in_channels = num_inputs if i == 0 else num_channels[i - 1]
-            out_channels = num_channels[i]
-            layers += [
-                nn.Conv1d(
-                    in_channels,
-                    out_channels,
-                    kernel_size,
-                    stride=1,
-                    padding=dilation_size,
-                    dilation=dilation_size,
-                ),
-                nn.BatchNorm1d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.Dropout(dropout),
-            ]
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.network(x)
-
-
-class ScaledDotProductAttention(nn.Module):
-    def __init__(self, scale):
-        super(ScaledDotProductAttention, self).__init__()
-        self.scale = scale
-
-    def forward(self, query, key, value):
-        attention = torch.matmul(query, key.transpose(-2, -1)) / self.scale
-        attention = F.softmax(attention, dim=-1)
-        return torch.matmul(attention, value)
-
-
-class SharedFeatureExtractor(nn.Module):
-    def __init__(
-        self,
-        input_size=1024,
-        seq_length=30,
-        num_channels=[512, 256],
-        kernel_size=3,
-        dropout=0.25,
-    ):
-        super(SharedFeatureExtractor, self).__init__()
-        self.temporal_conv_net = TemporalConvNet(
-            input_size, num_channels, kernel_size, dropout
-        )
-        self.attention = ScaledDotProductAttention(scale=seq_length**0.5)
-
-    def forward(self, x):
-        # Input x shape: (batch, features, seq_length)
-        conv_output = self.temporal_conv_net(x)  # Apply Temporal Convolution
-        # Attention expects (batch, seq_length, features), so transpose conv_output
-        conv_output = conv_output.transpose(
-            1, 2
-        )  # Now shape: (batch, seq_length, features)
-        attention_output = self.attention(
-            conv_output, conv_output, conv_output
-        )  # Self-attention
-        attention_output = attention_output.transpose(1, 2)
-        return attention_output
-
-
 class ExpertModel(nn.Module):
     def __init__(
         self,
         input_size=1024,
-        seq_length=30,
-        num_channels=[512, 256, 128, 64],
-        kernel_size=3,
-        dropout=0.25,
+        hidden_size=150,
+        num_layers=2,
+        num_classes=2,
+        dropout_rate=0.25,
     ):
         super(ExpertModel, self).__init__()
-        self.temporal_conv_net = TemporalConvNet(
-            input_size, num_channels, kernel_size, dropout
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+        # Bidirectional LSTM layer
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout_rate,
         )
-        self.attention = ScaledDotProductAttention(scale=seq_length**0.5)
+
+        self.dropout = nn.Dropout(dropout_rate)
         self.avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Linear(num_channels[-1], 2)
+
+        # Fully connected layer
+        self.fc = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x):
-        # Input x shape: (batch, features, seq_length)
-        conv_output = self.temporal_conv_net(x)  # Apply Temporal Convolution
-        # Attention expects (batch, seq_length, features), so transpose conv_output
-        conv_output = conv_output.transpose(
-            1, 2
-        )  # Now shape: (batch, seq_length, features)
-        attention_output = self.attention(
-            conv_output, conv_output, conv_output
-        )  # Self-attention
-        attention_output = attention_output.transpose(1, 2)
-        embedding = self.avg_pool(attention_output)
-        output = self.fc(embedding.squeeze(-1))
-        return output, embedding
+        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+
+        x = x.transpose(1, 2)
+        lstm_out, _ = self.lstm(x, (h0, c0))
+        lstm_out = self.avg_pool(lstm_out.permute(0, 2, 1)).squeeze(-1)
+        out = self.dropout(lstm_out)
+        out = self.fc(out)
+
+        return out, lstm_out
 
 
 class MasterModel(nn.Module):
@@ -114,7 +55,7 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
-        representation_size=64,
+        representation_size=300,
         alpha=0.5,
     ):
         super(MasterModel, self).__init__()
@@ -125,7 +66,6 @@ class MasterModel(nn.Module):
         self.representation_size = representation_size
         self.alpha = alpha
         self.beta = 1 - alpha
-        self.shared_extractor = SharedFeatureExtractor()
         self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
     def process_experts(self, shared_features):
@@ -373,7 +313,7 @@ class MasterModel(nn.Module):
             bce_loss = criterion(outputs, labels_x.float())
             loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
 
-            loss = bce_loss + triplet_loss + loss_cr
+            loss = bce_loss + triplet_loss
             loss.backward()
             optimizer.step()
 
@@ -423,7 +363,7 @@ class MasterModel(nn.Module):
                     loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
                     bce_loss = criterion(outputs, labels_x.float()).item()
 
-                    loss += bce_loss + loss_cr
+                    loss += bce_loss
 
                 probs = torch.sigmoid(outputs)
                 preds = (probs > 0.5).float()
@@ -458,7 +398,7 @@ class MasterModel(nn.Module):
         device,
         output_dir,
         num_epochs=100,
-        early_stopping_patience=10,
+        early_stopping_patience=20,
     ):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)

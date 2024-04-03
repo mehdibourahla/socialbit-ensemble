@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 from utils import log_message, EarlyStopping
 import time
+import torch.nn.functional as F
 
 
 class BaselineModel(nn.Module):
@@ -96,10 +97,10 @@ class BaselineModel(nn.Module):
         device,
         output_dir,
         num_epochs=100,
-        early_stopping_patience=10,
+        early_stopping_patience=20,
     ):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
 
         train_losses = []
@@ -245,10 +246,9 @@ class BiLSTMModel(BaselineModel):
             bidirectional=True,
             dropout=dropout_rate,
         )
-
         # Dropout for regularization
         self.dropout = nn.Dropout(dropout_rate)
-
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
         self.class_weights_tensor = class_weights_tensor
@@ -262,10 +262,12 @@ class BiLSTMModel(BaselineModel):
 
         # Forward propagate the LSTM
         x = x.transpose(1, 2)
-        out, _ = self.lstm(x, (h0, c0))
+        out, _ = self.lstm(
+            x, (h0, c0)
+        )  # out: tensor of shape (batch_size, seq_length, hidden_size*2)
 
-        # Pass the output of the last time step to the classifier
-        out = self.dropout(out[:, -1, :])  # Take the last time step
+        out = self.avg_pool(out.permute(0, 2, 1)).squeeze(-1)
+        out = self.dropout(out)  # out: tensor of shape (batch_size, hidden_size*2)
         out = self.fc(out)
 
         return out
