@@ -329,7 +329,7 @@ def load_and_prepare_data(file_path, i_fold, j_subfold):
         ~df["dataset"].isin([i_fold, i_fold + 5, j_subfold, j_subfold + 5])
     ]
 
-    # Transform training_fold dataset to 0-7
-    training_fold["dataset"] = pd.Categorical(training_fold["dataset"]).codes
+    training_fold_codes = pd.Categorical(training_fold["dataset"]).codes
+    training_fold.loc[:, "dataset"] = training_fold_codes
 
     return training_fold, validation_fold, test_fold
