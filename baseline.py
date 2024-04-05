@@ -248,7 +248,7 @@ class BiLSTMModel(BaselineModel):
         )
         # Dropout for regularization
         self.dropout = nn.Dropout(dropout_rate)
-        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.pool = nn.AdaptiveMaxPool1d(1)
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
         self.class_weights_tensor = class_weights_tensor
@@ -266,7 +266,7 @@ class BiLSTMModel(BaselineModel):
             x, (h0, c0)
         )  # out: tensor of shape (batch_size, seq_length, hidden_size*2)
 
-        out = self.avg_pool(out.permute(0, 2, 1)).squeeze(-1)
+        out = self.pool(out.permute(0, 2, 1)).squeeze(-1)
         out = self.dropout(out)  # out: tensor of shape (batch_size, hidden_size*2)
         out = self.fc(out)
 
