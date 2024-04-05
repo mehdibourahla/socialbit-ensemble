@@ -100,7 +100,7 @@ class BaselineModel(nn.Module):
         early_stopping_patience=20,
     ):
         criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
 
         train_losses = []
