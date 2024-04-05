@@ -18,18 +18,18 @@ from data_loader import YAMNetFeaturesDatasetDavid
 
 
 def compute_metrics(preds, labels):
-    probs = torch.sigmoid(torch.tensor(preds)).numpy()
-    preds = (probs > 0.5).astype(int)
 
-    # Calculate metrics
+    preds = np.array(preds)
+    labels = np.array(labels)
+
     TP = np.sum((preds == 1) & (labels == 1))
     TN = np.sum((preds == 0) & (labels == 0))
     FP = np.sum((preds == 1) & (labels == 0))
     FN = np.sum((preds == 0) & (labels == 1))
 
+    accuracy = np.mean(preds == labels)
     sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
     specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-    accuracy = (TP + TN) / (TP + TN + FP + FN)
 
     return accuracy, sensitivity, specificity
 
@@ -37,33 +37,64 @@ def compute_metrics(preds, labels):
 def fusion(models, test_gen, device):
     all_predictions = []
     all_labels = []
+    all_confidences = []
 
-    # Iterate over models to collect their predictions
     for idx, model in enumerate(models):
         model.to(device)
         model_predictions = []
+        model_confidences = []
         model.eval()
         with torch.no_grad():
             for batch in test_gen:
                 _, inputs, labels, _ = batch
                 inputs = inputs.to(device)
                 outputs = model(inputs)
-                model_predictions.append(outputs.cpu().numpy())
-                if model is models[0]:  # Collect labels only once
-                    all_labels.append(labels.numpy())
-        accuracy, sensitivity, specificity = compute_metrics(
-            np.concatenate(model_predictions, axis=0), labels.numpy()
-        )
-        print(
-            f"Expert_{idx} | Accuracy: {accuracy}, Sensitivity: {sensitivity}, Specificity: {specificity}"
-        )
-        all_predictions.append(np.concatenate(model_predictions, axis=0))
+                positive_class_probabilities = outputs
+                negative_class_probabilities = 1 - outputs
+                probabilities = torch.cat(
+                    (
+                        negative_class_probabilities.unsqueeze(1),
+                        positive_class_probabilities.unsqueeze(1),
+                    ),
+                    dim=1,
+                )
+                confidences, predicted_classes = torch.max(probabilities, dim=1)
+                model_predictions.append(predicted_classes.cpu().numpy())
+                model_confidences.append(confidences.cpu().numpy())
 
-    all_labels = np.concatenate(all_labels, axis=0)
-    fused_predictions = np.mean(all_predictions, axis=0)  # Average predictions
+                if idx == 0:  # Collect labels only once
+                    all_labels.extend(labels.numpy())
 
-    accuracy, sensitivity, specificity = compute_metrics(fused_predictions, all_labels)
+        model_predictions = np.concatenate(model_predictions, axis=0)
+        model_confidences = np.concatenate(model_confidences, axis=0)
+        all_predictions.append(model_predictions)
+        all_confidences.append(model_confidences)
 
+    all_predictions = np.array(all_predictions)  # Shape: (num_experts, num_samples)
+    all_confidences = np.array(all_confidences)  # Shape: (num_experts, num_samples)
+
+    # Weighted fusion based on confidence scores
+    weighted_predictions = np.zeros_like(
+        all_predictions[0], dtype=float
+    )  # Shape: (num_samples,)
+    for i in range(all_predictions.shape[1]):
+        sample_predictions = all_predictions[:, i]
+        sample_confidences = all_confidences[:, i]
+        unique_predictions = np.unique(sample_predictions)
+
+        weighted_sum = {pred: 0 for pred in unique_predictions}
+        for pred, conf in zip(sample_predictions, sample_confidences):
+            weighted_sum[pred] += conf
+
+        final_prediction = max(weighted_sum, key=weighted_sum.get)
+        weighted_predictions[i] = final_prediction
+
+    # Calculate and return metrics for fused predictions
+    weighted_predictions = torch.eye(2)[weighted_predictions].numpy()
+    all_labels = torch.eye(2)[all_labels].numpy()
+    accuracy, sensitivity, specificity = compute_metrics(
+        weighted_predictions, all_labels
+    )
     return accuracy, sensitivity, specificity
 
 

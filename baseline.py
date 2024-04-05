@@ -11,7 +11,7 @@ class BaselineModel(nn.Module):
         super(BaselineModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
 
-    def train_epoch(self, train_loader, criterion, optimizer, device):
+    def train_epoch(self, train_loader, optimizer, device):
         self.train()
         train_loss = 0
         correct = 0
@@ -20,17 +20,19 @@ class BaselineModel(nn.Module):
         for i, batch_x in enumerate(train_loader):
             _, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+            batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
+                device
+            )
+            criterion = nn.BCELoss(weight=batch_weight)
 
             optimizer.zero_grad()
             outputs = self(inputs_x)
-
-            loss = criterion(outputs, labels_x.float())
+            loss = criterion(outputs, labels_x)
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
-            probs = torch.sigmoid(outputs)
-            preds = (probs > 0.5).float()
+            preds = (outputs > 0.5).float()
             correct += (preds == labels_x).float().sum().item()
             total += labels_x.numel()
         train_accuracy = correct / total
@@ -43,7 +45,6 @@ class BaselineModel(nn.Module):
         self,
         data_loader,
         device,
-        criterion=None,
     ):
         self.eval()
         TP = 0
@@ -60,12 +61,13 @@ class BaselineModel(nn.Module):
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
                 outputs = self(inputs_x)
+                batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
+                    device
+                )
+                criterion = nn.BCELoss(weight=batch_weight)
+                loss += criterion(outputs, labels_x.float()).item()
 
-                if criterion is not None:
-                    loss += criterion(outputs, labels_x.float()).item()
-
-                probs = torch.sigmoid(outputs)
-                preds = (probs > 0.5).float()
+                preds = (outputs > 0.5).float()
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
@@ -99,7 +101,6 @@ class BaselineModel(nn.Module):
         num_epochs=100,
         early_stopping_patience=20,
     ):
-        criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
 
@@ -109,10 +110,10 @@ class BaselineModel(nn.Module):
         val_accuracies = []
         for epoch in range(num_epochs):
             train_loss, train_accuracy, training_time = self.train_epoch(
-                train_loader, criterion, optimizer, device
+                train_loader, optimizer, device
             )
             val_loss, val_accuracy, _, _, validation_time = self.evaluate(
-                val_loader, device, criterion
+                val_loader, device
             )
 
             train_losses.append(train_loss)
@@ -229,7 +230,7 @@ class BiLSTMModel(BaselineModel):
         input_size=1024,
         hidden_size=150,
         num_layers=2,
-        num_classes=2,
+        num_classes=1,
         dropout_rate=0.25,
     ):
         super(BiLSTMModel, self).__init__(class_weights_tensor=class_weights_tensor)
@@ -248,10 +249,11 @@ class BiLSTMModel(BaselineModel):
         )
         # Dropout for regularization
         self.dropout = nn.Dropout(dropout_rate)
-        self.pool = nn.AdaptiveMaxPool1d(1)
+        self.pool = nn.AdaptiveAvgPool1d(1)
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 for bidirectional
         self.class_weights_tensor = class_weights_tensor
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         # Initialize hidden state and cell state
@@ -266,9 +268,9 @@ class BiLSTMModel(BaselineModel):
             x, (h0, c0)
         )  # out: tensor of shape (batch_size, seq_length, hidden_size*2)
 
-        out = self.dropout(
-            out[:, -1, :]
-        )  # out: tensor of shape (batch_size, hidden_size*2)
+        out = self.pool(out.permute(0, 2, 1)).squeeze(-1)
+        out = self.dropout(out)
         out = self.fc(out)
-
+        out = self.sigmoid(out)
+        out = out.squeeze(-1)
         return out
