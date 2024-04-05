@@ -266,8 +266,9 @@ class BiLSTMModel(BaselineModel):
             x, (h0, c0)
         )  # out: tensor of shape (batch_size, seq_length, hidden_size*2)
 
-        out = self.pool(out.permute(0, 2, 1)).squeeze(-1)
-        out = self.dropout(out)  # out: tensor of shape (batch_size, hidden_size*2)
+        out = self.dropout(
+            out[:, -1, :]
+        )  # out: tensor of shape (batch_size, hidden_size*2)
         out = self.fc(out)
 
         return out
