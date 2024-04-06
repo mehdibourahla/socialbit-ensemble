@@ -20,19 +20,18 @@ class BaselineModel(nn.Module):
         for i, batch_x in enumerate(train_loader):
             _, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-            batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
-                device
-            )
-            criterion = nn.BCELoss(weight=batch_weight)
+            batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
 
             optimizer.zero_grad()
             outputs = self(inputs_x)
-            loss = criterion(outputs, labels_x)
+            loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+            loss = (loss * batch_weight).mean()
+            print(loss)
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
-            preds = (outputs > 0.5).float()
+            preds = torch.round(outputs).float()
             correct += (preds == labels_x).float().sum().item()
             total += labels_x.numel()
         train_accuracy = correct / total
@@ -41,17 +40,13 @@ class BaselineModel(nn.Module):
 
         return train_loss, train_accuracy, epoch_end_training - epoch_start_training
 
-    def evaluate(
-        self,
-        data_loader,
-        device,
-    ):
+    def evaluate(self, data_loader, device):
         self.eval()
         TP = 0
         TN = 0
         FP = 0
         FN = 0
-        loss = 0
+        val_loss = 0
         correct = 0
         total = 0
         epoch_start_validation = time.time()
@@ -59,15 +54,11 @@ class BaselineModel(nn.Module):
             for i, batch_x in enumerate(data_loader):
                 _, inputs_x, labels_x, _ = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-
+                batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
                 outputs = self(inputs_x)
-                batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
-                    device
-                )
-                criterion = nn.BCELoss(weight=batch_weight)
-                loss += criterion(outputs, labels_x.float()).item()
-
-                preds = (outputs > 0.5).float()
+                loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+                loss = (loss * batch_weight).mean()
+                preds = torch.round(outputs).float()
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
@@ -76,16 +67,17 @@ class BaselineModel(nn.Module):
                 FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
 
                 correct += (preds == labels_x).float().sum().item()
+                val_loss += loss.item()
                 total += labels_x.numel()
         epoch_end_validation = time.time()
 
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = correct / total
-        loss /= len(data_loader)
+        val_loss /= len(data_loader)
 
         return (
-            loss,
+            val_loss,
             accuracy,
             sensitivity,
             specificity,
@@ -272,5 +264,5 @@ class BiLSTMModel(BaselineModel):
         out = self.dropout(out)
         out = self.fc(out)
         out = self.sigmoid(out)
-        out = out.squeeze(-1)
+        out = out.squeeze()
         return out
