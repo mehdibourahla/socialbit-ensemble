@@ -12,7 +12,7 @@ class ExpertModel(nn.Module):
         input_size=1024,
         hidden_size=150,
         num_layers=2,
-        num_classes=2,
+        num_classes=1,
         dropout_rate=0.25,
     ):
         super(ExpertModel, self).__init__()
@@ -34,6 +34,7 @@ class ExpertModel(nn.Module):
 
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
@@ -44,7 +45,8 @@ class ExpertModel(nn.Module):
         lstm_out = self.avg_pool(lstm_out.permute(0, 2, 1)).squeeze(-1)
         out = self.dropout(lstm_out)
         out = self.fc(out)
-
+        out = self.sigmoid(out)
+        out = out.squeeze(-1)
         return out, lstm_out
 
 
@@ -72,7 +74,6 @@ class MasterModel(nn.Module):
         expert_outputs = torch.zeros(
             shared_features.size(0),
             self.num_experts,
-            self.num_classes,
             device=shared_features.device,
         )
         expert_representations = torch.zeros(
@@ -84,7 +85,7 @@ class MasterModel(nn.Module):
 
         for i, expert in enumerate(self.experts):
             output, representation = expert(shared_features)
-            expert_outputs[:, i, :] = output
+            expert_outputs[:, i] = output
             expert_representations[:, i, :] = representation.reshape(
                 shared_features.size(0), -1
             )  # Flatten the representation
@@ -130,21 +131,21 @@ class MasterModel(nn.Module):
     def forward_train(self, x, expert_idx):
         # shared_features = self.shared_extractor(x)
         expert_outputs, expert_representations = self.process_experts(x)
-        output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        output = torch.zeros(x.size(0), device=x.device)
         representation = torch.zeros(
             x.size(0), self.representation_size, device=x.device
         )
-        newbie_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        newbie_output = torch.zeros(x.size(0), device=x.device)
 
         # Get the expert output
         for i in range(x.size(0)):
-            output[i, :] = expert_outputs[i, expert_idx[i], :]
+            output[i] = expert_outputs[i, expert_idx[i]]
             representation[i, :] = expert_representations[i, expert_idx[i], :]
 
         # Get the newbie output
         for i in range(self.num_experts):
             mask = expert_idx != i
-            newbie_output[mask, :] += expert_outputs[mask, i, :]
+            newbie_output[mask] += expert_outputs[mask, i]
         newbie_output = newbie_output / (self.num_experts - 1)
 
         return output, newbie_output, representation, expert_representations
@@ -152,8 +153,8 @@ class MasterModel(nn.Module):
     def forward_inference(self, x):
         # shared_features = self.shared_extractor(x)
         expert_outputs, expert_representations = self.process_experts(x)
-        output = torch.zeros(x.size(0), self.num_classes, device=x.device)
-        newbie_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
+        output = torch.zeros(x.size(0), device=x.device)
+        newbie_output = torch.zeros(x.size(0), device=x.device)
 
         similarity_weights, similarities_pos, similarities_neg = (
             self.compute_similarity_weights(
@@ -164,12 +165,12 @@ class MasterModel(nn.Module):
         # Get the most similar expert output
         expert_idx = torch.argmax(similarity_weights, dim=1)
         for i in range(x.size(0)):
-            output[i, :] = expert_outputs[i, expert_idx[i], :]
+            output[i] = expert_outputs[i, expert_idx[i]]
 
         # Get the newbie output
         for i in range(self.num_experts):
             mask = expert_idx != i
-            newbie_output[mask, :] += expert_outputs[mask, i, :]
+            newbie_output[mask] += expert_outputs[mask, i]
         newbie_output = newbie_output / (self.num_experts - 1)
 
         return (
@@ -264,7 +265,7 @@ class MasterModel(nn.Module):
             self.signature_matrix[idx * 2] = pos_medoids[idx].to(device)  # Positive
             self.signature_matrix[idx * 2 + 1] = neg_medoids[idx].to(device)  # Negative
 
-    def train_epoch(self, train_loader, criterion, optimizer, device):
+    def train_epoch(self, train_loader, optimizer, device):
         self.train()
         train_loss = 0
         correct = 0
@@ -277,14 +278,17 @@ class MasterModel(nn.Module):
         for i, batch_x in enumerate(train_loader):
             _, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-
+            batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
+                device
+            )
+            criterion = nn.BCELoss(weight=batch_weight)
             optimizer.zero_grad()
             outputs, newbie, representations, all_representations = self.forward_train(
                 inputs_x,
                 domains_x,
             )
             # Separate positive and negative embeddings for clustering
-            pos_labels = labels_x[:, 1] > 0.5
+            pos_labels = labels_x > 0.5
             neg_labels = ~pos_labels
             # Update signature sums and counts
             for idx in range(self.num_experts):
@@ -308,18 +312,17 @@ class MasterModel(nn.Module):
                     )
 
             triplet_loss = self.contrastive_loss(
-                all_representations, domains_x, labels_x[:, 1]
+                all_representations, domains_x, labels_x
             )
-            bce_loss = criterion(outputs, labels_x.float())
-            loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
+            bce_loss = criterion(outputs, labels_x)
+            loss_cr = ((newbie - outputs) ** 2).sum().mean()
 
             loss = bce_loss + triplet_loss
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
-            probs = torch.sigmoid(outputs)
-            preds = (probs > 0.5).float()
+            preds = (outputs > 0.5).float()
             correct += (preds == labels_x).float().sum().item()
             total += labels_x.numel()
         train_accuracy = correct / total
@@ -339,7 +342,6 @@ class MasterModel(nn.Module):
         self,
         data_loader,
         device,
-        criterion=None,
     ):
         self.eval()
         TP = 0
@@ -358,15 +360,17 @@ class MasterModel(nn.Module):
                 outputs, _, newbie, _, _, _, _ = self.forward_inference(
                     inputs_x,
                 )
+                batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
+                    device
+                )
+                criterion = nn.BCELoss(weight=batch_weight)
 
-                if criterion is not None:
-                    loss_cr = ((newbie - outputs) ** 2).sum(1).mean()
-                    bce_loss = criterion(outputs, labels_x.float()).item()
+                loss_cr = ((newbie - outputs) ** 2).sum().mean()
+                bce_loss = criterion(outputs, labels_x.float()).item()
 
-                    loss += bce_loss
+                loss += bce_loss
 
-                probs = torch.sigmoid(outputs)
-                preds = (probs > 0.5).float()
+                preds = (outputs > 0.5).float()
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
@@ -400,7 +404,6 @@ class MasterModel(nn.Module):
         num_epochs=100,
         early_stopping_patience=20,
     ):
-        criterion = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
         optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
         self.signature_matrix = torch.rand(
@@ -413,10 +416,10 @@ class MasterModel(nn.Module):
         val_accuracies = []
         for epoch in range(num_epochs):
             train_loss, train_accuracy, training_time = self.train_epoch(
-                train_loader, criterion, optimizer, device
+                train_loader, optimizer, device
             )
             val_loss, val_accuracy, _, _, validation_time = self.evaluate(
-                val_loader, device, criterion
+                val_loader, device
             )
 
             train_losses.append(train_loss)
