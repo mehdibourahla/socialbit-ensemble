@@ -46,7 +46,7 @@ class ExpertModel(nn.Module):
         out = self.dropout(lstm_out)
         out = self.fc(out)
         out = self.sigmoid(out)
-        out = out.squeeze(-1)
+        out = out.squeeze()
         return out, lstm_out
 
 
@@ -278,10 +278,7 @@ class MasterModel(nn.Module):
         for i, batch_x in enumerate(train_loader):
             _, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-            batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
-                device
-            )
-            criterion = nn.BCELoss(weight=batch_weight)
+            batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
             optimizer.zero_grad()
             outputs, newbie, representations, all_representations = self.forward_train(
                 inputs_x,
@@ -314,7 +311,8 @@ class MasterModel(nn.Module):
             triplet_loss = self.contrastive_loss(
                 all_representations, domains_x, labels_x
             )
-            bce_loss = criterion(outputs, labels_x)
+            bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+            bce_loss = (bce_loss * batch_weight).mean()
             loss_cr = ((newbie - outputs) ** 2).sum().mean()
 
             loss = bce_loss + triplet_loss
@@ -322,7 +320,7 @@ class MasterModel(nn.Module):
             optimizer.step()
 
             train_loss += loss.item()
-            preds = (outputs > 0.5).float()
+            preds = torch.round(outputs).float()
             correct += (preds == labels_x).float().sum().item()
             total += labels_x.numel()
         train_accuracy = correct / total
@@ -360,17 +358,14 @@ class MasterModel(nn.Module):
                 outputs, _, newbie, _, _, _, _ = self.forward_inference(
                     inputs_x,
                 )
-                batch_weight = self.class_weights_tensor[labels_x.long().squeeze()].to(
-                    device
-                )
-                criterion = nn.BCELoss(weight=batch_weight)
+                batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
 
                 loss_cr = ((newbie - outputs) ** 2).sum().mean()
-                bce_loss = criterion(outputs, labels_x.float()).item()
-
+                bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+                bce_loss = (bce_loss * batch_weight).mean()
                 loss += bce_loss
 
-                preds = (outputs > 0.5).float()
+                preds = torch.round(outputs).float()
 
                 # Compute confusion matrix components
                 TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
@@ -404,7 +399,7 @@ class MasterModel(nn.Module):
         num_epochs=100,
         early_stopping_patience=20,
     ):
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
         self.signature_matrix = torch.rand(
             self.num_experts * 2, self.representation_size, device=device
