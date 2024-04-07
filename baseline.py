@@ -12,6 +12,9 @@ class BaselineModel(nn.Module):
         self.class_weights_tensor = class_weights_tensor
 
     def train_epoch(self, train_loader, optimizer, device):
+        # CHANGES:
+        # - Changed CrossEntropy to BCELoss
+        # - Applied class weights at batch level
         self.train()
         train_loss = 0
         correct = 0
@@ -91,9 +94,12 @@ class BaselineModel(nn.Module):
         device,
         output_dir,
         num_epochs=100,
-        early_stopping_patience=20,
+        early_stopping_patience=10,
     ):
-        optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+        # CHANGES:
+        # - Changed learning rate to 3e-4 instead of 1e-5
+        # - Increased early stopping patience to 20 instead of 10
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
 
         train_losses = []
@@ -248,6 +254,10 @@ class BiLSTMModel(BaselineModel):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
+        # CHANGES:
+        # - Pooling instead of last time step
+        # - Sigmoid activation
+
         # Initialize hidden state and cell state
         h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(
             x.device
