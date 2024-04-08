@@ -153,34 +153,9 @@ class MasterModel(nn.Module):
     def forward_inference(self, x):
         # shared_features = self.shared_extractor(x)
         expert_outputs, expert_representations = self.process_experts(x)
-        output = torch.zeros(x.size(0), device=x.device)
-        newbie_output = torch.zeros(x.size(0), device=x.device)
-
-        similarity_weights, similarities_pos, similarities_neg = (
-            self.compute_similarity_weights(
-                expert_representations, self.signature_matrix
-            )
-        )
-
-        # Get the most similar expert output
-        expert_idx = torch.argmax(similarity_weights, dim=1)
-        for i in range(x.size(0)):
-            output[i] = expert_outputs[i, expert_idx[i]]
-
-        # Get the newbie output
-        for i in range(self.num_experts):
-            mask = expert_idx != i
-            newbie_output[mask] += expert_outputs[mask, i]
-        newbie_output = newbie_output / (self.num_experts - 1)
-
         return (
-            output,
+            expert_outputs,
             expert_representations,
-            newbie_output,
-            expert_idx,
-            similarity_weights,
-            similarities_pos,
-            similarities_neg,
         )
 
     def get_positive_example(self, representations, domains, labels, i):
@@ -271,9 +246,6 @@ class MasterModel(nn.Module):
         correct = 0
         total = 0
 
-        pos_representations_for_clustering = [[] for _ in range(self.num_experts)]
-        neg_representations_for_clustering = [[] for _ in range(self.num_experts)]
-
         epoch_start_training = time.time()
         for i, batch_x in enumerate(train_loader):
             _, inputs_x, labels_x, domains_x = batch_x
@@ -284,29 +256,6 @@ class MasterModel(nn.Module):
                 inputs_x,
                 domains_x,
             )
-            # Separate positive and negative embeddings for clustering
-            pos_labels = labels_x > 0.5
-            neg_labels = ~pos_labels
-            # Update signature sums and counts
-            for idx in range(self.num_experts):
-                mask_pos = (domains_x == idx) & pos_labels
-                mask_neg = (domains_x == idx) & neg_labels
-                if mask_pos.any():
-                    sampled_pos_representations = (
-                        representations[mask_pos, :].detach().cpu().numpy().tolist()
-                    )
-                    pos_representations_for_clustering[idx].extend(
-                        sampled_pos_representations
-                    )
-
-                if mask_neg.any():
-                    sampled_neg_representations = (
-                        representations[mask_neg, :].detach().cpu().numpy().tolist()
-                    )
-
-                    neg_representations_for_clustering[idx].extend(
-                        sampled_neg_representations
-                    )
 
             triplet_loss = self.contrastive_loss(
                 all_representations, domains_x, labels_x
@@ -326,12 +275,10 @@ class MasterModel(nn.Module):
         train_accuracy = correct / total
         train_loss /= len(train_loader)
 
-        # Update the signature matrix
-        self.update_signature_matrix(
-            pos_representations_for_clustering,
-            neg_representations_for_clustering,
-            device,
-        )
+        for idx, expert in enumerate(self.experts):
+            for name, param in expert.named_parameters():
+                if name == "fc.weight":
+                    self.signature_matrix[idx] = param.detach().cpu()
         epoch_end_training = time.time()
 
         return train_loss, train_accuracy, epoch_end_training - epoch_start_training
@@ -342,45 +289,54 @@ class MasterModel(nn.Module):
         device,
     ):
         self.eval()
-        TP = 0
-        TN = 0
-        FP = 0
-        FN = 0
-        loss = 0
-        correct = 0
-        total = 0
+        TP, TN, FP, FN, loss, correct, total = 0, 0, 0, 0, 0, 0, 0
         epoch_start_validation = time.time()
-        with torch.no_grad():
-            for i, batch_x in enumerate(data_loader):
-                _, inputs_x, labels_x, _ = batch_x
-                inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
 
-                outputs, _, newbie, _, _, _, _ = self.forward_inference(
-                    inputs_x,
-                )
-                batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
+        # with torch.no_grad():
+        for i, batch_x in enumerate(data_loader):
+            _, inputs_x, labels_x, _ = batch_x
+            inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+            batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
+            similarities = torch.zeros(self.num_experts, device=device)
 
-                loss_cr = ((newbie - outputs) ** 2).sum().mean()
-                bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+            for idx, expert in enumerate(self.experts):
+                expert_output, _ = expert(inputs_x)
+
+                bce_loss = nn.BCELoss(reduction="none")(expert_output, labels_x)
                 bce_loss = (bce_loss * batch_weight).mean()
-                loss += bce_loss + loss_cr
 
-                preds = torch.round(outputs).float()
+                # Similarity analysis
+                bce_loss.backward(
+                    retain_graph=True if idx < len(self.experts) - 1 else False
+                )
+                grad = expert.fc.weight.grad
+                similarity = F.cosine_similarity(grad, self.signature_matrix[idx])
+                similarities[idx] = similarity
+                # Clear gradients for the next expert
+                expert.zero_grad()
+            weighted_similarities = F.softmax(similarities, dim=0)
+            chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
+            for idx, expert in enumerate(self.experts):
+                expert_output, _ = expert(inputs_x)
+                chosen_outputs += weighted_similarities[idx] * expert_output
+            loss += nn.BCELoss(reduction="none")(chosen_outputs, labels_x).mean()
+            preds = torch.round(chosen_outputs).float()
 
-                # Compute confusion matrix components
-                TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
-                TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
-                FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
-                FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+            # Compute confusion matrix components
+            TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
+            TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
+            FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
+            FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
 
-                correct += (preds == labels_x).float().sum().item()
-                total += labels_x.numel()
+            correct += (preds == labels_x).float().sum().item()
+            total += labels_x.numel()
         epoch_end_validation = time.time()
 
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = correct / total
         loss /= len(data_loader)
+        loss = loss.item()
 
         return (
             loss,
@@ -402,7 +358,7 @@ class MasterModel(nn.Module):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
         self.signature_matrix = torch.rand(
-            self.num_experts * 2, self.representation_size, device=device
+            self.num_experts, self.representation_size, device=device
         )
 
         train_losses = []
