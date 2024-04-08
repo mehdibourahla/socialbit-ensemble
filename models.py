@@ -315,7 +315,7 @@ class MasterModel(nn.Module):
             bce_loss = (bce_loss * batch_weight).mean()
             loss_cr = ((newbie - outputs) ** 2).sum().mean()
 
-            loss = bce_loss + triplet_loss
+            loss = bce_loss + triplet_loss + loss_cr
             loss.backward()
             optimizer.step()
 
@@ -363,7 +363,7 @@ class MasterModel(nn.Module):
                 loss_cr = ((newbie - outputs) ** 2).sum().mean()
                 bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
                 bce_loss = (bce_loss * batch_weight).mean()
-                loss += bce_loss
+                loss += bce_loss + loss_cr
 
                 preds = torch.round(outputs).float()
 
