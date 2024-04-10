@@ -70,30 +70,24 @@ def fusion(models, test_gen, device):
         all_predictions.append(model_predictions)
         all_confidences.append(model_confidences)
 
-    all_predictions = np.array(all_predictions)  # Shape: (num_experts, num_samples)
-    all_confidences = np.array(all_confidences)  # Shape: (num_experts, num_samples)
+    all_predictions = np.array(all_predictions)  # Shape: (num_models, num_samples)
+    all_confidences = np.array(all_confidences)  # Shape: (num_models, num_samples)
 
-    # Weighted fusion based on confidence scores
-    weighted_predictions = np.zeros_like(
-        all_predictions[0], dtype=float
-    )  # Shape: (num_samples,)
+    # Implementing Dynamic Soft Voting
+    final_predictions = np.zeros(all_predictions.shape[1], dtype=int)
     for i in range(all_predictions.shape[1]):
         sample_predictions = all_predictions[:, i]
         sample_confidences = all_confidences[:, i]
-        unique_predictions = np.unique(sample_predictions)
+        weighted_votes = np.zeros(np.max(sample_predictions) + 1)
 
-        weighted_sum = {pred: 0 for pred in unique_predictions}
         for pred, conf in zip(sample_predictions, sample_confidences):
-            weighted_sum[pred] += conf
+            weighted_votes[pred] += conf
 
-        final_prediction = max(weighted_sum, key=weighted_sum.get)
-        weighted_predictions[i] = final_prediction
+        final_predictions[i] = np.argmax(weighted_votes)
 
-    # Calculate and return metrics for fused predictions
-    weighted_predictions = torch.eye(2)[weighted_predictions].numpy()
-    all_labels = torch.eye(2)[all_labels].numpy()
+    # Compute metrics
     accuracy, sensitivity, specificity = compute_metrics(
-        weighted_predictions, all_labels
+        final_predictions, np.array(all_labels)
     )
     return accuracy, sensitivity, specificity
 
