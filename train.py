@@ -98,15 +98,8 @@ def main(args):
     train_gen, val_gen, test_gen = get_data_loaders(
         args.dataset, training_fold, validation_fold, test_fold
     )
-    train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
-        train_gen, val_gen, device, current_output_dir
-    )
+    model.train_model(train_gen, val_gen, device, current_output_dir)
 
-    # Save model and log results
-    plot_training_curves(
-        train_losses, val_losses, train_accuracies, val_accuracies, current_output_dir
-    )
-    torch.save(model.state_dict(), os.path.join(current_output_dir, "model.pth"))
     if args.model == "master":
         torch.save(
             model.signature_matrix,

@@ -37,8 +37,12 @@ class ExpertModel(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+        h0 = torch.zeros(
+            self.num_layers * 2, x.size(0), self.hidden_size, requires_grad=True
+        ).to(x.device)
+        c0 = torch.zeros(
+            self.num_layers * 2, x.size(0), self.hidden_size, requires_grad=True
+        ).to(x.device)
 
         x = x.transpose(1, 2)
         lstm_out, _ = self.lstm(x, (h0, c0))
@@ -195,7 +199,8 @@ class MasterModel(nn.Module):
         return representations[negative_idx]
 
     def contrastive_loss(self, representations, domains, labels, margin=0.5):
-        loss = 0.0
+        # Representations shape is (batch_size, num_experts, representation_size)
+        loss = torch.zeros(representations.size(0))
         valid_triplets = 0
         for i in range(representations.size(0)):
             anchor = representations[i].unsqueeze(0)
@@ -220,13 +225,7 @@ class MasterModel(nn.Module):
                 continue
 
             valid_triplets += 1
-            loss += triplet_loss.mean()
-
-        if valid_triplets > 0:
-            loss /= valid_triplets
-        else:
-            # Create a grad-able zero tensor if no valid triplets are found
-            loss = torch.tensor(0.0, requires_grad=True)
+            loss[i] = triplet_loss.mean()
 
         return loss
 
@@ -248,23 +247,33 @@ class MasterModel(nn.Module):
 
         epoch_start_training = time.time()
         for i, batch_x in enumerate(train_loader):
+            # Get the inputs and labels and get batch weights
             _, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
             batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
+
+            # For Domain Di, select the expert Ei.
+            # Get the output and represnetation from the expert Ei
+            # and the average output from the other experts (newbie)
+            # Get the representations from all the experts
             optimizer.zero_grad()
             outputs, newbie, representations, all_representations = self.forward_train(
                 inputs_x,
                 domains_x,
             )
 
+            # Use the representations from the experts to compute the triplet loss
+            # Compute the BCE loss and the loss for the contrastive regularization
+            # Apply the batch weights to combined losses
             triplet_loss = self.contrastive_loss(
                 all_representations, domains_x, labels_x
             )
             bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
-            bce_loss = (bce_loss * batch_weight).mean()
-            loss_cr = ((newbie - outputs) ** 2).sum().mean()
+            loss_cr = ((newbie - outputs) ** 2).sum()
 
             loss = bce_loss + triplet_loss + loss_cr
+            loss = (loss * batch_weight).mean()
+
             loss.backward()
             optimizer.step()
 
@@ -275,6 +284,7 @@ class MasterModel(nn.Module):
         train_accuracy = correct / total
         train_loss /= len(train_loader)
 
+        # Update the signature matrix with the gradients of the experts using the FC layer
         for idx, expert in enumerate(self.experts):
             for name, param in expert.named_parameters():
                 if name == "fc.weight":
@@ -298,17 +308,27 @@ class MasterModel(nn.Module):
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
             batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
             similarities = torch.zeros(self.num_experts, device=device)
-
+            expert_outputs = torch.zeros(
+                inputs_x.size(0), self.num_experts, device=device, requires_grad=False
+            )
+            expert_representations = torch.zeros(
+                inputs_x.size(0),
+                self.num_experts,
+                self.representation_size,
+                device=device,
+                requires_grad=False,
+            )
             for idx, expert in enumerate(self.experts):
-                expert_output, _ = expert(inputs_x)
-
+                expert_output, expert_representation = expert(inputs_x)
+                expert_outputs[:, idx] = expert_output
+                expert_representations[:, idx, :] = expert_representation.reshape(
+                    inputs_x.size(0), -1
+                )
                 bce_loss = nn.BCELoss(reduction="none")(expert_output, labels_x)
                 bce_loss = (bce_loss * batch_weight).mean()
 
                 # Similarity analysis
-                bce_loss.backward(
-                    retain_graph=True if idx < len(self.experts) - 1 else False
-                )
+                bce_loss.backward()
                 grad = expert.fc.weight.grad
                 similarity = F.cosine_similarity(grad, self.signature_matrix[idx])
                 similarities[idx] = similarity
@@ -316,9 +336,10 @@ class MasterModel(nn.Module):
                 expert.zero_grad()
             weighted_similarities = F.softmax(similarities, dim=0)
             chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
+
             for idx, expert in enumerate(self.experts):
-                expert_output, _ = expert(inputs_x)
-                chosen_outputs += weighted_similarities[idx] * expert_output
+                chosen_outputs += weighted_similarities[idx] * expert_outputs[:, idx]
+
             loss += nn.BCELoss(reduction="none")(chosen_outputs, labels_x).mean()
             preds = torch.round(chosen_outputs).float()
 
@@ -356,15 +377,16 @@ class MasterModel(nn.Module):
         early_stopping_patience=20,
     ):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
-        early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
+        early_stopping = EarlyStopping(
+            patience=early_stopping_patience,
+            delta=0.001,
+            output_dir=output_dir,
+            verbose=True,
+        )
         self.signature_matrix = torch.rand(
             self.num_experts, self.representation_size, device=device
         )
 
-        train_losses = []
-        val_losses = []
-        train_accuracies = []
-        val_accuracies = []
         for epoch in range(num_epochs):
             train_loss, train_accuracy, training_time = self.train_epoch(
                 train_loader, optimizer, device
@@ -372,11 +394,6 @@ class MasterModel(nn.Module):
             val_loss, val_accuracy, _, _, validation_time = self.evaluate(
                 val_loader, device
             )
-
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            train_accuracies.append(train_accuracy)
-            val_accuracies.append(val_accuracy)
 
             log_message(
                 {
@@ -390,12 +407,12 @@ class MasterModel(nn.Module):
                 }
             )
 
-            if early_stopping.early_stop(val_loss):
-                print(
-                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
-                )
-                early_stopping.save_checkpoint(
-                    val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
-                )
+            # Delete unnecessary variables to free up memory
+
+            early_stopping(val_loss, self)
+
+            if early_stopping.early_stop:
+                print("Early stopping")
                 break
-        return train_losses, val_losses, train_accuracies, val_accuracies
+
+        self.load_state_dict(torch.load(early_stopping.path))
