@@ -99,12 +99,13 @@ class BaselineModel(nn.Module):
         # - Changed learning rate to 3e-4 instead of 1e-5
         # - Increased early stopping patience to 20 instead of 10
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
-        early_stopping = EarlyStopping(patience=early_stopping_patience, delta=0.001)
+        early_stopping = EarlyStopping(
+            patience=early_stopping_patience,
+            delta=0.001,
+            output_dir=output_dir,
+            verbose=True,
+        )
 
-        train_losses = []
-        val_losses = []
-        train_accuracies = []
-        val_accuracies = []
         for epoch in range(num_epochs):
             train_loss, train_accuracy, training_time = self.train_epoch(
                 train_loader, optimizer, device
@@ -112,11 +113,6 @@ class BaselineModel(nn.Module):
             val_loss, val_accuracy, _, _, validation_time = self.evaluate(
                 val_loader, device
             )
-
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            train_accuracies.append(train_accuracy)
-            val_accuracies.append(val_accuracy)
 
             log_message(
                 {
@@ -130,15 +126,13 @@ class BaselineModel(nn.Module):
                 }
             )
 
-            if early_stopping.early_stop(val_loss):
-                print(
-                    f"Validation loss did not decrease for {early_stopping.patience} epochs. Training stopped."
-                )
-                early_stopping.save_checkpoint(
-                    val_loss, self, filename=f"{output_dir}/model_checkpoint.pth"
-                )
+            early_stopping(val_loss, self)
+
+            if early_stopping.early_stop:
+                print("Early stopping")
                 break
-        return train_losses, val_losses, train_accuracies, val_accuracies
+
+        self.load_state_dict(torch.load(early_stopping.path))
 
 
 class TransformerBlock(nn.Module):
@@ -257,10 +251,12 @@ class BiLSTMModel(BaselineModel):
         # - Sigmoid activation
 
         # Initialize hidden state and cell state
-        h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(
-            x.device
-        )  # *2 for bidirectional
-        c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+        h0 = torch.zeros(
+            self.num_layers * 2, x.size(0), self.hidden_size, requires_grad=True
+        ).to(x.device)
+        c0 = torch.zeros(
+            self.num_layers * 2, x.size(0), self.hidden_size, requires_grad=True
+        ).to(x.device)
 
         # Forward propagate the LSTM
         x = x.transpose(1, 2)

@@ -35,41 +35,60 @@ def setup_wandb(args):
 
 
 class EarlyStopping:
-    def __init__(self, patience=10, delta=0):
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+
+    def __init__(
+        self, patience=7, verbose=False, delta=0, output_dir="/", trace_func=print
+    ):
         """
-        :param patience: How long to wait after the last time validation loss improved.
-                         Default: 5
-        :param delta: Minimum change in the monitored quantity to qualify as an improvement.
-                      Default: 0
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement.
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            output_dir (str): Directory to save the model.
+            trace_func (function): trace print function.
+                            Default: print
         """
         self.patience = patience
-        self.delta = delta
+        self.verbose = verbose
         self.counter = 0
-        self.min_validation_loss = float("inf")
-        self.best_model = None  # Optional: To keep track of the best model
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+        self.path = os.path.join(output_dir, "early_stopping.pth")
+        self.trace_func = trace_func
 
-    def early_stop(self, validation_loss):
-        if validation_loss < self.min_validation_loss - self.delta:
-            self.min_validation_loss = validation_loss
-            self.counter = 0
-            return False
-        else:
+    def __call__(self, val_loss, model):
+
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
             self.counter += 1
+            self.trace_func(
+                f"EarlyStopping counter: {self.counter} out of {self.patience}"
+            )
             if self.counter >= self.patience:
-                return True
-            return False
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
 
-    def save_checkpoint(self, val_loss, model, filename="model_checkpoint.pth"):
-        """
-        Saves model when validation loss decreases.
-        :param val_loss: Current epoch's validation loss
-        :param model: The PyTorch model to save
-        :param filename: Filename for the saved model checkpoint (optional)
-        """
-        if val_loss < self.min_validation_loss:
-            torch.save(model.state_dict(), filename)
-            self.min_validation_loss = val_loss
-            self.best_model = model
+    def save_checkpoint(self, val_loss, model):
+        """Saves model when validation loss decrease."""
+        if self.verbose:
+            self.trace_func(
+                f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ..."
+            )
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
 
 
 def representative_cluster(X, check=False):
