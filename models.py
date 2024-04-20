@@ -62,7 +62,7 @@ class MasterModel(nn.Module):
         class_weights_tensor=None,
         signature_matrix=None,
         representation_size=300,
-        alpha=0.5,
+        coefficents=(0.5, 0.25, 0.25),
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
@@ -70,8 +70,7 @@ class MasterModel(nn.Module):
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.representation_size = representation_size
-        self.alpha = alpha
-        self.beta = 1 - alpha
+        self.alpha, self.beta, self.gamma = coefficents
         self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
     def process_experts(self, shared_features):
@@ -265,13 +264,17 @@ class MasterModel(nn.Module):
             # Use the representations from the experts to compute the triplet loss
             # Compute the BCE loss and the loss for the contrastive regularization
             # Apply the batch weights to combined losses
-            triplet_loss = self.contrastive_loss(
-                all_representations, domains_x, labels_x
+            triplet_loss = (
+                self.contrastive_loss(all_representations, domains_x, labels_x)
+                if self.gamma > 0
+                else 0
             )
+            loss_cr = ((newbie - outputs) ** 2).sum() if self.beta > 0 else 0
             bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
-            loss_cr = ((newbie - outputs) ** 2).sum()
 
-            loss = bce_loss + triplet_loss + loss_cr
+            loss = (
+                self.alpha * bce_loss + self.beta * loss_cr + self.gamma * triplet_loss
+            )
             loss = (loss * batch_weight).mean()
 
             loss.backward()
@@ -306,7 +309,6 @@ class MasterModel(nn.Module):
         for i, batch_x in enumerate(data_loader):
             _, inputs_x, labels_x, _ = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-            batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
             similarities = torch.zeros(self.num_experts, device=device)
             expert_outputs = torch.zeros(
                 inputs_x.size(0), self.num_experts, device=device, requires_grad=False
@@ -318,14 +320,15 @@ class MasterModel(nn.Module):
                 device=device,
                 requires_grad=False,
             )
+
             for idx, expert in enumerate(self.experts):
                 expert_output, expert_representation = expert(inputs_x)
                 expert_outputs[:, idx] = expert_output
                 expert_representations[:, idx, :] = expert_representation.reshape(
                     inputs_x.size(0), -1
                 )
-                bce_loss = nn.BCELoss(reduction="none")(expert_output, labels_x)
-                bce_loss = (bce_loss * batch_weight).mean()
+                # Compute the BCE loss for each expert
+                bce_loss = nn.BCELoss()(expert_output, labels_x)
 
                 # Similarity analysis
                 bce_loss.backward()
@@ -339,8 +342,9 @@ class MasterModel(nn.Module):
 
             for idx, expert in enumerate(self.experts):
                 chosen_outputs += weighted_similarities[idx] * expert_outputs[:, idx]
+            bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
+            loss += bce_loss
 
-            loss += nn.BCELoss(reduction="none")(chosen_outputs, labels_x).mean()
             preds = torch.round(chosen_outputs).float()
 
             # Compute confusion matrix components
@@ -374,7 +378,7 @@ class MasterModel(nn.Module):
         device,
         output_dir,
         num_epochs=100,
-        early_stopping_patience=20,
+        early_stopping_patience=10,
     ):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         early_stopping = EarlyStopping(

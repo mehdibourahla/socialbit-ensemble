@@ -56,10 +56,8 @@ class BaselineModel(nn.Module):
             for i, batch_x in enumerate(data_loader):
                 _, inputs_x, labels_x, _ = batch_x
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-                batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
                 outputs = self(inputs_x)
-                loss = nn.BCELoss(reduction="none")(outputs, labels_x)
-                loss = (loss * batch_weight).mean()
+                loss = nn.BCELoss()(outputs, labels_x)
                 preds = torch.round(outputs).float()
 
                 # Compute confusion matrix components
