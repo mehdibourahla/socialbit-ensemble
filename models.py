@@ -61,16 +61,24 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
+        gradient_matrix=None,
         representation_size=300,
         coefficents=(0.5, 0.25, 0.25),
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
         self.signature_matrix = signature_matrix
+        self.gradient_matrix = gradient_matrix
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.representation_size = representation_size
-        self.alpha, self.beta, self.gamma = coefficents
+        (
+            self.alpha,
+            self.beta,
+            self.gamma,
+            self.signature_coeff,
+            self.gradients_coeff,
+        ) = coefficents
         self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
     def process_experts(self, shared_features):
@@ -95,7 +103,7 @@ class MasterModel(nn.Module):
 
         return expert_outputs, expert_representations
 
-    def compute_similarity_weights(self, expert_representations, signature_matrix):
+    def compute_similarity_weights(self, expert_representations):
         batch_size, num_experts, _ = expert_representations.size()
 
         similarities_pos = torch.empty(
@@ -111,8 +119,8 @@ class MasterModel(nn.Module):
             neg_index = 2 * i + 1
 
             rep = expert_representations[:, i, :]
-            signature_pos = signature_matrix[pos_index, :].unsqueeze(0)
-            signature_neg = signature_matrix[neg_index, :].unsqueeze(0)
+            signature_pos = self.signature_matrix[pos_index, :].unsqueeze(0)
+            signature_neg = self.signature_matrix[neg_index, :].unsqueeze(0)
 
             similarities_pos[:, i] = F.cosine_similarity(
                 rep, signature_pos.expand_as(rep), dim=1
@@ -244,6 +252,9 @@ class MasterModel(nn.Module):
         correct = 0
         total = 0
 
+        pos_representations_for_clustering = [[] for _ in range(self.num_experts)]
+        neg_representations_for_clustering = [[] for _ in range(self.num_experts)]
+
         epoch_start_training = time.time()
         for i, batch_x in enumerate(train_loader):
             # Get the inputs and labels and get batch weights
@@ -251,18 +262,36 @@ class MasterModel(nn.Module):
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
             batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
 
-            # For Domain Di, select the expert Ei.
-            # Get the output and represnetation from the expert Ei
-            # and the average output from the other experts (newbie)
-            # Get the representations from all the experts
             optimizer.zero_grad()
             outputs, newbie, representations, all_representations = self.forward_train(
-                inputs_x,
-                domains_x,
+                inputs_x, domains_x
             )
 
-            # Use the representations from the experts to compute the triplet loss
-            # Compute the BCE loss and the loss for the contrastive regularization
+            # Separate positive and negative embeddings for clustering
+            if self.signature_coeff > 0:
+                pos_labels = labels_x > 0.5
+                neg_labels = ~pos_labels
+                # Update signature sums and counts
+                for idx in range(self.num_experts):
+                    mask_pos = (domains_x == idx) & pos_labels
+                    mask_neg = (domains_x == idx) & neg_labels
+                    if mask_pos.any():
+                        sampled_pos_representations = (
+                            representations[mask_pos, :].detach().cpu().numpy().tolist()
+                        )
+                        pos_representations_for_clustering[idx].extend(
+                            sampled_pos_representations
+                        )
+
+                    if mask_neg.any():
+                        sampled_neg_representations = (
+                            representations[mask_neg, :].detach().cpu().numpy().tolist()
+                        )
+
+                        neg_representations_for_clustering[idx].extend(
+                            sampled_neg_representations
+                        )
+
             # Apply the batch weights to combined losses
             triplet_loss = (
                 self.contrastive_loss(all_representations, domains_x, labels_x)
@@ -287,12 +316,32 @@ class MasterModel(nn.Module):
         train_accuracy = correct / total
         train_loss /= len(train_loader)
 
-        # Update the signature matrix with the gradients of the experts using the FC layer
-        for idx, expert in enumerate(self.experts):
-            for name, param in expert.named_parameters():
-                if name == "fc.weight":
-                    self.signature_matrix[idx] = param.detach().cpu()
+        # Update the signature matrix
+        if self.signature_coeff > 0:
+            self.update_signature_matrix(
+                pos_representations_for_clustering,
+                neg_representations_for_clustering,
+                device,
+            )
+        if self.gradients_coeff > 0:
+            # Update the signature matrix with the gradients of the experts using the FC layer
+            for idx, expert in enumerate(self.experts):
+                for name, param in expert.named_parameters():
+                    if name == "fc.weight":
+                        self.gradient_matrix[idx] = param.detach().cpu()
         epoch_end_training = time.time()
+
+        del (
+            pos_representations_for_clustering,
+            neg_representations_for_clustering,
+            outputs,
+            newbie,
+            representations,
+            all_representations,
+            bce_loss,
+            loss,
+            preds,
+        )
 
         return train_loss, train_accuracy, epoch_end_training - epoch_start_training
 
@@ -301,62 +350,119 @@ class MasterModel(nn.Module):
         data_loader,
         device,
     ):
-        self.eval()
         TP, TN, FP, FN, loss, correct, total = 0, 0, 0, 0, 0, 0, 0
+        # Initialize tensors for storage on device
+
         epoch_start_validation = time.time()
+        if self.signature_coeff > 0:
+            with torch.no_grad():
+                for _, (_, inputs_x, labels_x, _) in enumerate(data_loader):
+                    inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+                    expert_outputs = torch.zeros(
+                        inputs_x.size(0),
+                        self.num_experts,
+                        device=device,
+                        requires_grad=False,
+                    )
+                    expert_representations = torch.zeros(
+                        inputs_x.size(0),
+                        self.num_experts,
+                        self.representation_size,
+                        device=device,
+                        requires_grad=False,
+                    )
 
-        # with torch.no_grad():
-        for i, batch_x in enumerate(data_loader):
-            _, inputs_x, labels_x, _ = batch_x
-            inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-            similarities = torch.zeros(self.num_experts, device=device)
-            expert_outputs = torch.zeros(
-                inputs_x.size(0), self.num_experts, device=device, requires_grad=False
-            )
-            expert_representations = torch.zeros(
-                inputs_x.size(0),
-                self.num_experts,
-                self.representation_size,
-                device=device,
-                requires_grad=False,
-            )
+                    for idx, expert in enumerate(self.experts):
+                        expert.eval()
+                        outputs, representations = expert(inputs_x)
+                        expert_outputs[:, idx] = outputs
+                        expert_representations[:, idx, :] = representations
+                        expert.zero_grad()
 
-            for idx, expert in enumerate(self.experts):
-                expert_output, expert_representation = expert(inputs_x)
-                expert_outputs[:, idx] = expert_output
-                expert_representations[:, idx, :] = expert_representation.reshape(
-                    inputs_x.size(0), -1
+                    signature_similarities, _, _ = self.compute_similarity_weights(
+                        expert_representations
+                    )
+
+                    weighted_similarities = F.softmax(signature_similarities, dim=1)
+                    chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
+
+                    for idx in range(self.num_experts):
+                        chosen_outputs += (
+                            weighted_similarities[:, idx] * expert_outputs[:, idx]
+                        )
+                    bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
+                    loss += bce_loss
+
+                    preds = torch.round(chosen_outputs).float()
+
+                    # Compute confusion matrix components
+                    TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
+                    TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
+                    FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
+                    FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+
+                    correct += (preds == labels_x).float().sum().item()
+                    total += labels_x.numel()
+
+        else:
+            for _, (_, inputs_x, labels_x, _) in enumerate(data_loader):
+                inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+                expert_outputs = torch.zeros(
+                    inputs_x.size(0),
+                    self.num_experts,
+                    device=device,
+                    requires_grad=False,
                 )
-                # Compute the BCE loss for each expert
-                bce_loss = nn.BCELoss()(expert_output, labels_x)
+                expert_representations = torch.zeros(
+                    inputs_x.size(0),
+                    self.num_experts,
+                    self.representation_size,
+                    device=device,
+                    requires_grad=False,
+                )
+                gradient_similarities = torch.zeros(
+                    inputs_x.size(0),
+                    self.num_experts,
+                    device=device,
+                    requires_grad=False,
+                )
+                for idx, expert in enumerate(self.experts):
+                    expert.eval()
+                    outputs, representations = expert(inputs_x)
+                    expert_outputs[:, idx] = outputs
+                    expert_representations[:, idx, :] = representations
 
-                # Similarity analysis
-                bce_loss.backward()
-                grad = expert.fc.weight.grad
-                similarity = F.cosine_similarity(grad, self.signature_matrix[idx])
-                similarities[idx] = similarity
-                # Clear gradients for the next expert
-                expert.zero_grad()
-            weighted_similarities = F.softmax(similarities, dim=0)
-            chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
+                    bce_loss = nn.BCELoss()(outputs, labels_x)
+                    bce_loss.backward(retain_graph=True)
 
-            for idx, expert in enumerate(self.experts):
-                chosen_outputs += weighted_similarities[idx] * expert_outputs[:, idx]
-            bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
-            loss += bce_loss
+                    grad = expert.fc.weight.grad
+                    similarity = F.cosine_similarity(grad, self.gradient_matrix[idx])
+                    gradient_similarities[:, idx] = similarity
 
-            preds = torch.round(chosen_outputs).float()
+                    expert.zero_grad()
 
-            # Compute confusion matrix components
-            TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
-            TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
-            FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
-            FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+                weighted_similarities = F.softmax(gradient_similarities, dim=1)
+                chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
 
-            correct += (preds == labels_x).float().sum().item()
-            total += labels_x.numel()
+                for idx in range(self.num_experts):
+                    chosen_outputs += (
+                        weighted_similarities[:, idx] * expert_outputs[:, idx]
+                    )
+                bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
+                loss += bce_loss
+
+                preds = torch.round(chosen_outputs).float()
+
+                # Compute confusion matrix components
+                TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
+                TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
+                FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
+                FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+
+                correct += (preds == labels_x).float().sum().item()
+                total += labels_x.numel()
+
         epoch_end_validation = time.time()
-
         sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
         specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
         accuracy = correct / total
@@ -387,7 +493,10 @@ class MasterModel(nn.Module):
             output_dir=output_dir,
             verbose=True,
         )
-        self.signature_matrix = torch.rand(
+        self.signature_matrix = torch.zeros(
+            self.num_experts * 2, self.representation_size, device=device
+        )
+        self.gradient_matrix = torch.zeros(
             self.num_experts, self.representation_size, device=device
         )
 
@@ -419,4 +528,6 @@ class MasterModel(nn.Module):
                 print("Early stopping")
                 break
 
-        self.load_state_dict(torch.load(early_stopping.path))
+        self.load_state_dict(torch.load(early_stopping.model_path))
+        self.signature_matrix = torch.load(early_stopping.signature_matrix_path)
+        self.gradient_matrix = torch.load(early_stopping.gradient_path)

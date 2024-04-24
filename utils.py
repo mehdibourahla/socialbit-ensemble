@@ -59,7 +59,9 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
-        self.path = os.path.join(output_dir, "early_stopping.pth")
+        self.model_path = os.path.join(output_dir, "early_stopping.pth")
+        self.signature_matrix_path = os.path.join(output_dir, "signature_matrix.pth")
+        self.gradient_path = os.path.join(output_dir, "gradient.pth")
         self.trace_func = trace_func
 
     def __call__(self, val_loss, model):
@@ -87,7 +89,9 @@ class EarlyStopping:
             self.trace_func(
                 f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ..."
             )
-        torch.save(model.state_dict(), self.path)
+        torch.save(model.state_dict(), self.model_path)
+        torch.save(model.signature_matrix, self.signature_matrix_path)
+        torch.save(model.gradient_matrix, self.gradient_path)
         self.val_loss_min = val_loss
 
 
@@ -96,7 +100,6 @@ def representative_cluster(X, check=False):
 
     for expert_index, expert in enumerate(X):
         # Compute intra-cluster distances once
-
         pairwise_distances = squareform(pdist(expert, "cosine"))
         intra_cluster_distances = pairwise_distances.sum(axis=0)
 

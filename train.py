@@ -38,11 +38,18 @@ def initialize_model(args, class_weights):
     elif args.model == "transformer":
         model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
-        coefficents = args.alpha, args.beta, args.gamma
+        coefficents = (
+            args.alpha,
+            args.beta,
+            args.gamma,
+            args.signature_coeff,
+            args.gradients_coeff,
+        )
+
         model = MasterModel(
             num_experts=args.num_experts,
             class_weights_tensor=class_weights_tensor,
-            coefficents=coefficents
+            coefficents=coefficents,
         ).to(device)
     return model, device
 
@@ -51,7 +58,7 @@ def get_data_loaders(dataset, training_fold, validation_fold, test_fold):
     dataloader_class = (
         YAMNetFeaturesDatasetEAR if dataset == "EAR" else YAMNetFeaturesSINS
     )
-    
+
     train_gen = DataLoader(
         dataloader_class(training_fold),
         batch_size=32,
@@ -174,6 +181,12 @@ def initialize_args(parser):
     parser.add_argument("--alpha", type=float, default=0.5, help="Alpha BCE loss")
     parser.add_argument("--beta", type=float, default=0.5, help="Beta CR loss")
     parser.add_argument("--gamma", type=float, default=0.5, help="Gamma Triplet loss")
+    parser.add_argument(
+        "--signature_coeff", type=float, default=0.5, help="Signature Coefficient"
+    )
+    parser.add_argument(
+        "--gradients_coeff", type=float, default=0.5, help="Gradients Coefficient"
+    )
 
 
 if __name__ == "__main__":
