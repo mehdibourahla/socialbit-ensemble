@@ -24,13 +24,9 @@ def log_message(message):
 
 def setup_wandb(args):
     wandb.login(key=args.wandb_key)
-    config = {
-        "commit_id": args.commit_id,
-        "i_fold": args.i_fold,
-        "j_subfold": args.j_subfold,
-        "num_experts": args.num_experts,
-        "model": args.model,
-    }
+    config = {}
+    for key, value in vars(args).items():
+        config[key] = value
     wandb.init(project="socialbit-ensemble", config=config)
 
 
