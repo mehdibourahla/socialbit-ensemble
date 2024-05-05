@@ -61,14 +61,12 @@ class MasterModel(nn.Module):
         num_classes=2,
         class_weights_tensor=None,
         signature_matrix=None,
-        gradient_matrix=None,
         representation_size=300,
         coefficents=(0.5, 0.25, 0.25),
     ):
         super(MasterModel, self).__init__()
         self.class_weights_tensor = class_weights_tensor
         self.signature_matrix = signature_matrix
-        self.gradient_matrix = gradient_matrix
         self.num_classes = num_classes
         self.num_experts = num_experts
         self.representation_size = representation_size
@@ -76,8 +74,6 @@ class MasterModel(nn.Module):
             self.alpha,
             self.beta,
             self.gamma,
-            self.signature_coeff,
-            self.gradients_coeff,
         ) = coefficents
         self.experts = nn.ModuleList([ExpertModel() for _ in range(num_experts)])
 
@@ -268,29 +264,28 @@ class MasterModel(nn.Module):
             )
 
             # Separate positive and negative embeddings for clustering
-            if self.signature_coeff > 0:
-                pos_labels = labels_x > 0.5
-                neg_labels = ~pos_labels
-                # Update signature sums and counts
-                for idx in range(self.num_experts):
-                    mask_pos = (domains_x == idx) & pos_labels
-                    mask_neg = (domains_x == idx) & neg_labels
-                    if mask_pos.any():
-                        sampled_pos_representations = (
-                            representations[mask_pos, :].detach().cpu().numpy().tolist()
-                        )
-                        pos_representations_for_clustering[idx].extend(
-                            sampled_pos_representations
-                        )
+            pos_labels = labels_x > 0.5
+            neg_labels = ~pos_labels
+            # Update signature sums and counts
+            for idx in range(self.num_experts):
+                mask_pos = (domains_x == idx) & pos_labels
+                mask_neg = (domains_x == idx) & neg_labels
+                if mask_pos.any():
+                    sampled_pos_representations = (
+                        representations[mask_pos, :].detach().cpu().numpy().tolist()
+                    )
+                    pos_representations_for_clustering[idx].extend(
+                        sampled_pos_representations
+                    )
 
-                    if mask_neg.any():
-                        sampled_neg_representations = (
-                            representations[mask_neg, :].detach().cpu().numpy().tolist()
-                        )
+                if mask_neg.any():
+                    sampled_neg_representations = (
+                        representations[mask_neg, :].detach().cpu().numpy().tolist()
+                    )
 
-                        neg_representations_for_clustering[idx].extend(
-                            sampled_neg_representations
-                        )
+                    neg_representations_for_clustering[idx].extend(
+                        sampled_neg_representations
+                    )
 
             # Apply the batch weights to combined losses
             triplet_loss = (
@@ -317,18 +312,12 @@ class MasterModel(nn.Module):
         train_loss /= len(train_loader)
 
         # Update the signature matrix
-        if self.signature_coeff > 0:
-            self.update_signature_matrix(
-                pos_representations_for_clustering,
-                neg_representations_for_clustering,
-                device,
-            )
-        if self.gradients_coeff > 0:
-            # Update the signature matrix with the gradients of the experts using the FC layer
-            for idx, expert in enumerate(self.experts):
-                for name, param in expert.named_parameters():
-                    if name == "fc.weight":
-                        self.gradient_matrix[idx] = param.detach().cpu()
+        self.update_signature_matrix(
+            pos_representations_for_clustering,
+            neg_representations_for_clustering,
+            device,
+        )
+
         epoch_end_training = time.time()
 
         del (
@@ -354,57 +343,7 @@ class MasterModel(nn.Module):
         # Initialize tensors for storage on device
 
         epoch_start_validation = time.time()
-        if self.signature_coeff > 0:
-            with torch.no_grad():
-                for _, (_, inputs_x, labels_x, _) in enumerate(data_loader):
-                    inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-                    expert_outputs = torch.zeros(
-                        inputs_x.size(0),
-                        self.num_experts,
-                        device=device,
-                        requires_grad=False,
-                    )
-                    expert_representations = torch.zeros(
-                        inputs_x.size(0),
-                        self.num_experts,
-                        self.representation_size,
-                        device=device,
-                        requires_grad=False,
-                    )
-
-                    for idx, expert in enumerate(self.experts):
-                        expert.eval()
-                        outputs, representations = expert(inputs_x)
-                        expert_outputs[:, idx] = outputs
-                        expert_representations[:, idx, :] = representations
-                        expert.zero_grad()
-
-                    signature_similarities, _, _ = self.compute_similarity_weights(
-                        expert_representations
-                    )
-
-                    weighted_similarities = F.softmax(signature_similarities, dim=1)
-                    chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
-
-                    for idx in range(self.num_experts):
-                        chosen_outputs += (
-                            weighted_similarities[:, idx] * expert_outputs[:, idx]
-                        )
-                    bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
-                    loss += bce_loss
-
-                    preds = torch.round(chosen_outputs).float()
-
-                    # Compute confusion matrix components
-                    TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
-                    TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
-                    FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
-                    FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
-
-                    correct += (preds == labels_x).float().sum().item()
-                    total += labels_x.numel()
-
-        else:
+        with torch.no_grad():
             for _, (_, inputs_x, labels_x, _) in enumerate(data_loader):
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
                 expert_outputs = torch.zeros(
@@ -420,28 +359,19 @@ class MasterModel(nn.Module):
                     device=device,
                     requires_grad=False,
                 )
-                gradient_similarities = torch.zeros(
-                    inputs_x.size(0),
-                    self.num_experts,
-                    device=device,
-                    requires_grad=False,
-                )
+
                 for idx, expert in enumerate(self.experts):
                     expert.eval()
                     outputs, representations = expert(inputs_x)
                     expert_outputs[:, idx] = outputs
                     expert_representations[:, idx, :] = representations
-
-                    bce_loss = nn.BCELoss()(outputs, labels_x)
-                    bce_loss.backward(retain_graph=True)
-
-                    grad = expert.fc.weight.grad
-                    similarity = F.cosine_similarity(grad, self.gradient_matrix[idx])
-                    gradient_similarities[:, idx] = similarity
-
                     expert.zero_grad()
 
-                weighted_similarities = F.softmax(gradient_similarities, dim=1)
+                signature_similarities, _, _ = self.compute_similarity_weights(
+                    expert_representations
+                )
+
+                weighted_similarities = F.softmax(signature_similarities, dim=1)
                 chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
 
                 for idx in range(self.num_experts):
@@ -496,9 +426,6 @@ class MasterModel(nn.Module):
         self.signature_matrix = torch.zeros(
             self.num_experts * 2, self.representation_size, device=device
         )
-        self.gradient_matrix = torch.zeros(
-            self.num_experts, self.representation_size, device=device
-        )
 
         for epoch in range(num_epochs):
             train_loss, train_accuracy, training_time = self.train_epoch(
@@ -520,8 +447,6 @@ class MasterModel(nn.Module):
                 }
             )
 
-            # Delete unnecessary variables to free up memory
-
             early_stopping(val_loss, self)
 
             if early_stopping.early_stop:
@@ -530,4 +455,3 @@ class MasterModel(nn.Module):
 
         self.load_state_dict(torch.load(early_stopping.model_path))
         self.signature_matrix = torch.load(early_stopping.signature_matrix_path)
-        self.gradient_matrix = torch.load(early_stopping.gradient_path)

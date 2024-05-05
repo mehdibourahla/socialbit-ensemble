@@ -38,13 +38,7 @@ def initialize_model(args, class_weights):
     elif args.model == "transformer":
         model = TransformerModel(class_weights_tensor=class_weights_tensor).to(device)
     else:
-        coefficents = (
-            args.alpha,
-            args.beta,
-            args.gamma,
-            args.signature_coeff,
-            args.gradients_coeff,
-        )
+        coefficents = (args.alpha, args.beta, args.gamma)
 
         model = MasterModel(
             num_experts=args.num_experts,
@@ -94,7 +88,10 @@ def main(args):
 
     # Load and prepare data
     training_fold, validation_fold, test_fold = load_and_prepare_data(
-        args.data_dir, args.i_fold, args.j_subfold
+        args.data_dir,
+        args.i_fold,
+        args.j_subfold,
+        True if args.balance_data > 0 else False,
     )
 
     # Compute class weights
@@ -178,15 +175,12 @@ def initialize_args(parser):
 
     parser.add_argument("--model", type=str, required=True, help="Model to use")
     parser.add_argument("--metadata", action="store_true", help="Use metadata")
+    parser.add_argument(
+        "--balance_data", type="int", default=1, help="Use downsampled data"
+    )
     parser.add_argument("--alpha", type=float, default=0.5, help="Alpha BCE loss")
     parser.add_argument("--beta", type=float, default=0.5, help="Beta CR loss")
     parser.add_argument("--gamma", type=float, default=0.5, help="Gamma Triplet loss")
-    parser.add_argument(
-        "--signature_coeff", type=float, default=0.5, help="Signature Coefficient"
-    )
-    parser.add_argument(
-        "--gradients_coeff", type=float, default=0.5, help="Gradients Coefficient"
-    )
 
 
 if __name__ == "__main__":

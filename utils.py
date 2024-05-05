@@ -61,7 +61,6 @@ class EarlyStopping:
         self.delta = delta
         self.model_path = os.path.join(output_dir, "early_stopping.pth")
         self.signature_matrix_path = os.path.join(output_dir, "signature_matrix.pth")
-        self.gradient_path = os.path.join(output_dir, "gradient.pth")
         self.trace_func = trace_func
 
     def __call__(self, val_loss, model):
@@ -91,7 +90,6 @@ class EarlyStopping:
             )
         torch.save(model.state_dict(), self.model_path)
         torch.save(model.signature_matrix, self.signature_matrix_path)
-        torch.save(model.gradient_matrix, self.gradient_path)
         self.val_loss_min = val_loss
 
 
@@ -336,7 +334,7 @@ def setup_directories(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
 
-def load_and_prepare_data(file_path, i_fold, j_subfold):
+def load_and_prepare_data(file_path, i_fold, j_subfold, balance_data=False):
     df = pd.read_csv(file_path)
     # Encode the 'dataset' column as categorical codes
     df["dataset"] = pd.Categorical(df["dataset"]).codes
@@ -353,5 +351,42 @@ def load_and_prepare_data(file_path, i_fold, j_subfold):
 
     training_fold_codes = pd.Categorical(training_fold["dataset"]).codes
     training_fold.loc[:, "dataset"] = training_fold_codes
+
+    if balance_data:
+        neg_class = training_fold[training_fold["is_social"] == 0]
+        pos_class = training_fold[training_fold["is_social"] == 1]
+
+        if len(neg_class) > len(pos_class):
+            neg_class = neg_class.sample(
+                n=len(pos_class), random_state=42, replace=False
+            )
+        else:
+            pos_class = pos_class.sample(
+                n=len(neg_class), random_state=42, replace=False
+            )
+
+        training_fold = pd.concat([neg_class, pos_class])
+
+    log_message(
+        {
+            "Training Fold Size": len(training_fold),
+            "Validation Fold Size": len(validation_fold),
+            "Test Fold Size": len(test_fold),
+            "Training Fold Positives": len(
+                training_fold[training_fold["is_social"] == 1]
+            ),
+            "Training Fold Negatives": len(
+                training_fold[training_fold["is_social"] == 0]
+            ),
+            "Validation Fold Positives": len(
+                validation_fold[validation_fold["is_social"] == 1]
+            ),
+            "Validation Fold Negatives": len(
+                validation_fold[validation_fold["is_social"] == 0]
+            ),
+            "Test Fold Positives": len(test_fold[test_fold["is_social"] == 1]),
+            "Test Fold Negatives": len(test_fold[test_fold["is_social"] == 0]),
+        }
+    )
 
     return training_fold, validation_fold, test_fold
