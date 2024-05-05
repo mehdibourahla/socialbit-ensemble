@@ -130,7 +130,7 @@ class BaselineModel(nn.Module):
                 print("Early stopping")
                 break
 
-        self.load_state_dict(torch.load(early_stopping.path))
+        self.load_state_dict(torch.load(early_stopping.model_path))
 
 
 class TransformerBlock(nn.Module):
