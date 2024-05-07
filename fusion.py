@@ -161,7 +161,10 @@ def main(args):
 
     # Load and prepare data
     training_fold, validation_fold, test_fold = load_and_prepare_data(
-        args.data_dir, args.i_fold, args.j_subfold
+        args.data_dir,
+        args.i_fold,
+        args.j_subfold,
+        True if args.balance_data > 0 else False,
     )
 
     models = []
@@ -237,6 +240,9 @@ def initialize_args(parser):
     parser.add_argument("--commit_id", type=str, help="Commit ID")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument("--dataset", type=str, required=True, help="Dataset to use")
+    parser.add_argument(
+        "--balance_data", type=int, default=1, help="Use downsampled data"
+    )
     parser.add_argument(
         "--num_experts",
         type=int,
