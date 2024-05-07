@@ -13,6 +13,8 @@ from utils import (
 )
 from train import compute_weights, initialize_model, get_data_loaders
 import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from data_loader import YAMNetFeaturesDatasetDavid
 
@@ -38,11 +40,13 @@ def fusion(models, test_gen, device):
     all_predictions = []
     all_labels = []
     all_confidences = []
+    all_probabilities = []
 
     for idx, model in enumerate(models):
         model.to(device)
         model_predictions = []
         model_confidences = []
+        model_probabilities = []
         model.eval()
         with torch.no_grad():
             for batch in test_gen:
@@ -61,17 +65,68 @@ def fusion(models, test_gen, device):
                 confidences, predicted_classes = torch.max(probabilities, dim=1)
                 model_predictions.append(predicted_classes.cpu().numpy())
                 model_confidences.append(confidences.cpu().numpy())
+                model_probabilities.append(probabilities.cpu().numpy())
 
                 if idx == 0:  # Collect labels only once
                     all_labels.extend(labels.numpy())
 
         model_predictions = np.concatenate(model_predictions, axis=0)
         model_confidences = np.concatenate(model_confidences, axis=0)
+        model_probabilities = np.concatenate(model_probabilities, axis=0)
         all_predictions.append(model_predictions)
         all_confidences.append(model_confidences)
+        all_probabilities.append(model_probabilities)
 
     all_predictions = np.array(all_predictions)  # Shape: (num_models, num_samples)
     all_confidences = np.array(all_confidences)  # Shape: (num_models, num_samples)
+    all_probabilities = np.array(
+        all_probabilities
+    )  # Shape: (num_models, num_samples, 2)
+    all_labels = np.array(all_labels)
+
+    # Create a heatmap of the probabilities for positive and negative classes
+    positive_indices = np.where(all_labels == 1)[0]
+    negative_indices = np.where(all_labels == 0)[0]
+
+    positive_probabilities = all_probabilities[
+        :, positive_indices, 1
+    ]  # Class 1 probabilities for true positive samples
+    negative_probabilities = all_probabilities[
+        :, negative_indices, 0
+    ]  # Class 0 probabilities for true negative samples
+
+    # Visualizing the confidences of the models for each sample as a heatmap
+    positive_probabilities = positive_probabilities.T
+    plt.figure(figsize=(10, 10))
+    ax = sns.heatmap(
+        positive_probabilities,
+        cmap="RdYlGn",
+        fmt=".2f",
+        cbar_kws={"label": "Probability"},
+    )
+    plt.title("Positive Class Probabilities for True Positive Samples")
+    plt.xlabel("Expert Index")
+    plt.ylabel("Sample Index")
+    ax.set_xticklabels(np.arange(1, len(models) + 1))
+
+    # Save the heatmap as pdf
+    plt.savefig("positive_prob_heatmap.pdf")
+
+    negative_probabilities = negative_probabilities.T
+    plt.figure(figsize=(10, 10))
+    ax = sns.heatmap(
+        negative_probabilities,
+        cmap="RdYlGn",
+        fmt=".2f",
+        cbar_kws={"label": "Probability"},
+    )
+    plt.title("Negative Class Probabilities for True Negative Samples")
+    plt.xlabel("Expert Index")
+    plt.ylabel("Sample Index")
+    ax.set_xticklabels(np.arange(1, len(models) + 1))
+
+    # Save the heatmap as pdf
+    plt.savefig("negative_prob_heatmap.pdf")
 
     # Implementing Dynamic Soft Voting
     final_predictions = np.zeros(all_predictions.shape[1], dtype=int)
