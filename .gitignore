@@ -12,3 +12,4 @@ config.json
 todo.md
 *.err
 *.out
+*.pdf

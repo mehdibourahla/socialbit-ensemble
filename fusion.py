@@ -179,21 +179,9 @@ def main(args):
         train_gen, val_gen, test_gen = get_data_loaders(
             args.dataset, training_fold_idx, validation_fold, test_fold
         )
-        train_losses, val_losses, train_accuracies, val_accuracies = model.train_model(
+        model.train_model(
             train_gen, val_gen, device, current_output_dir
         )
-
-        # Save model and log results
-        result_dir = os.path.join(current_output_dir, f"expert_{expert_idx}")
-        os.makedirs(result_dir, exist_ok=True)
-        plot_training_curves(
-            train_losses,
-            val_losses,
-            train_accuracies,
-            val_accuracies,
-            result_dir,
-        )
-        torch.save(model.state_dict(), os.path.join(result_dir, "model.pth"))
 
         models.append(model)
 
