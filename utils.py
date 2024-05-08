@@ -350,19 +350,33 @@ def load_and_prepare_data(file_path, i_fold, j_subfold, balance_data=False):
     training_fold.loc[:, "dataset"] = training_fold_codes
 
     if balance_data:
-        neg_class = training_fold[training_fold["is_social"] == 0]
-        pos_class = training_fold[training_fold["is_social"] == 1]
+        num_experts = len(training_fold["dataset"].unique())
+        training_fold_balanced = []
+        for expert_idx in range(num_experts):
+            expert_data = training_fold[training_fold["dataset"] == expert_idx]
+            pos_class = expert_data[expert_data["is_social"] == 1]
+            neg_class = expert_data[expert_data["is_social"] == 0]
+            if len(neg_class) > len(pos_class):
+                neg_class = neg_class.sample(
+                    n=len(pos_class), random_state=42, replace=False
+                )
+            else:
+                pos_class = pos_class.sample(
+                    n=len(neg_class), random_state=42, replace=False
+                )
+            training_fold_balanced.append(pos_class)
+            training_fold_balanced.append(neg_class)
+        training_fold = pd.concat(training_fold_balanced)
 
-        if len(neg_class) > len(pos_class):
-            neg_class = neg_class.sample(
-                n=len(pos_class), random_state=42, replace=False
-            )
-        else:
-            pos_class = pos_class.sample(
-                n=len(neg_class), random_state=42, replace=False
-            )
-
-        training_fold = pd.concat([neg_class, pos_class])
+    # Print the number of samples in each dataset
+    num_experts = len(training_fold["dataset"].unique())
+    for i in range(num_experts):
+        expert_samples = len(training_fold[training_fold["dataset"] == i])
+        log_message(
+            {
+                f"Expert {i+1} Samples": expert_samples,
+            }
+        )
 
     log_message(
         {
