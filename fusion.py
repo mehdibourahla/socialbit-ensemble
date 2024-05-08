@@ -97,7 +97,7 @@ def fusion(models, test_gen, device):
 
     # Visualizing the confidences of the models for each sample as a heatmap
     positive_probabilities = positive_probabilities.T
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(10, 16))
     ax = sns.heatmap(
         positive_probabilities,
         cmap="RdYlGn",
@@ -110,10 +110,10 @@ def fusion(models, test_gen, device):
     ax.set_xticklabels(np.arange(1, len(models) + 1))
 
     # Save the heatmap as pdf
-    plt.savefig("positive_prob_heatmap.pdf")
+    log_message({"Positive Class Probabilities": wandb.Image(plt)})
 
     negative_probabilities = negative_probabilities.T
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(10, 16))
     ax = sns.heatmap(
         negative_probabilities,
         cmap="RdYlGn",
@@ -126,7 +126,7 @@ def fusion(models, test_gen, device):
     ax.set_xticklabels(np.arange(1, len(models) + 1))
 
     # Save the heatmap as pdf
-    plt.savefig("negative_prob_heatmap.pdf")
+    log_message({"Negative Class Probabilities": wandb.Image(plt)})
 
     # Implementing Dynamic Soft Voting
     final_predictions = np.zeros(all_predictions.shape[1], dtype=int)
