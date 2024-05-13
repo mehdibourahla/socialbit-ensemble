@@ -334,6 +334,8 @@ def setup_directories(output_dir):
 def load_and_prepare_data(file_path, i_fold, j_subfold, balance_data=False):
     df = pd.read_csv(file_path)
     # Encode the 'dataset' column as categorical codes
+    df["source"] = df["dataset"].apply(lambda x: x.split("_")[0])
+    # df["source"] = df["dataset"]
     df["dataset"] = pd.Categorical(df["dataset"]).codes
 
     test_fold = df[(df["dataset"] == i_fold) | (df["dataset"] == i_fold + 5)]

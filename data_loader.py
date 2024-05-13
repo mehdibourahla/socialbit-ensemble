@@ -67,6 +67,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         # Retrieve the label and domain directly from the DataFrame
         label = self.dataframe.iloc[idx]["is_social"]
         domain = self.dataframe.iloc[idx]["dataset"]
+        source = self.dataframe.iloc[idx]["source"]
 
         try:
             # Load the feature data from the file
@@ -92,7 +93,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
 
         # label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        return self.filenames[idx], data_tensor, label_tensor, domain_tensor
+        return self.filenames[idx], source, data_tensor, label_tensor, domain_tensor
 
 
 class YAMNetFeaturesDatasetEAR(Dataset):
@@ -115,6 +116,7 @@ class YAMNetFeaturesDatasetEAR(Dataset):
         # Retrieve the label and domain directly from the DataFrame
         label = self.dataframe.iloc[idx]["is_social"]
         domain = self.dataframe.iloc[idx]["dataset"]
+        source = self.dataframe.iloc[idx]["source"]
 
         try:
             # Load the feature data from the file
@@ -140,4 +142,4 @@ class YAMNetFeaturesDatasetEAR(Dataset):
 
         # label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        return fpath, data_tensor, label_tensor, domain_tensor
+        return fpath, source, data_tensor, label_tensor, domain_tensor

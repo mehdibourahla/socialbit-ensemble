@@ -165,14 +165,18 @@ class MasterModel(nn.Module):
             expert_representations,
         )
 
-    def get_positive_example(self, representations, domains, labels, i):
+    def get_positive_example(self, representations, sources, domains, labels, i):
         anchor_domain = domains[i].item()
         anchor_label = labels[i].item()
+        anchor_source = sources[i].item()
 
         positive_indices = [
             idx
-            for idx, (domain, label) in enumerate(zip(domains, labels))
-            if (domain.item() == anchor_domain or label.item() == anchor_label)
+            for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
+            if (
+                source.item() != anchor_source
+                and (domain.item() == anchor_domain or label.item() == anchor_label)
+            )
             and idx != i
         ]
 
@@ -182,52 +186,49 @@ class MasterModel(nn.Module):
         positive_idx = random.choice(positive_indices)
         return representations[positive_idx]
 
-    def get_negative_example(self, representations, domains, labels, i):
+    def get_negative_example(self, representations, sources, domains, labels, i):
         """
         Select a negative example for the anchor, considering both domain and label.
         An example is negative if it has a different domain and a different label from the anchor.
         """
         anchor_domain = domains[i].item()
         anchor_label = labels[i].item()
+        anchor_source = sources[i].item()
+
         negative_indices = [
             idx
-            for idx, (domain, label) in enumerate(zip(domains, labels))
-            if domain.item() != anchor_domain and label.item() != anchor_label
+            for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
+            if (
+                source.item() != anchor_source
+                and (domain.item() != anchor_domain and label.item() != anchor_label)
+            )
         ]
 
         if not negative_indices:
-            return None  # Indicate no suitable negative example was found
+            return representations[i]
 
         negative_idx = random.choice(negative_indices)
         return representations[negative_idx]
 
-    def contrastive_loss(self, representations, domains, labels, margin=0.5):
+    def contrastive_loss(self, representations, sources, domains, labels, margin=0.05):
         # Representations shape is (batch_size, num_experts, representation_size)
         loss = torch.zeros(representations.size(0))
-        valid_triplets = 0
         for i in range(representations.size(0)):
-            anchor = representations[i].unsqueeze(0)
+            anchor = representations[i]  # Shape: (num_experts, representation_size)
             positive = self.get_positive_example(
-                representations, domains, labels, i
-            ).unsqueeze(0)
+                representations, sources, domains, labels, i
+            )
+            negative = self.get_negative_example(
+                representations, sources, domains, labels, i
+            )
+
             pos_sim = F.cosine_similarity(anchor, positive)
-            pos_dist = 1 - pos_sim
+            pos_dist = 1 - pos_sim  # 0 if postive is the anchor
 
-            negative = self.get_negative_example(representations, domains, labels, i)
-            if negative is not None:
-                negative = negative.unsqueeze(0)
-                neg_sim = F.cosine_similarity(anchor, negative)
-                neg_dist = 1 - neg_sim
-
-                # Triplet loss calculation with cosine distance
-                triplet_loss = F.relu(pos_dist - neg_dist + margin)
-            else:
-                # Handle cases where no suitable negative example is found
-                triplet_loss = F.relu(pos_dist + margin)
-                # Optionally log or handle this situation as needed
-                continue
-
-            valid_triplets += 1
+            neg_sim = F.cosine_similarity(anchor, negative)
+            neg_dist = 1 - neg_sim
+            # Triplet loss calculation with cosine distance
+            triplet_loss = F.relu(abs(pos_dist - neg_dist) + margin)
             loss[i] = triplet_loss.mean()
 
         return loss
@@ -254,7 +255,7 @@ class MasterModel(nn.Module):
         epoch_start_training = time.time()
         for i, batch_x in enumerate(train_loader):
             # Get the inputs and labels and get batch weights
-            _, inputs_x, labels_x, domains_x = batch_x
+            _, source_x, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
             batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
 
@@ -289,7 +290,9 @@ class MasterModel(nn.Module):
 
             # Apply the batch weights to combined losses
             triplet_loss = (
-                self.contrastive_loss(all_representations, domains_x, labels_x)
+                self.contrastive_loss(
+                    all_representations, source_x, domains_x, labels_x
+                )
                 if self.gamma > 0
                 else 0
             )
@@ -344,7 +347,7 @@ class MasterModel(nn.Module):
 
         epoch_start_validation = time.time()
         with torch.no_grad():
-            for _, (_, inputs_x, labels_x, _) in enumerate(data_loader):
+            for _, (_, _, inputs_x, labels_x, _) in enumerate(data_loader):
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
                 expert_outputs = torch.zeros(
                     inputs_x.size(0),
