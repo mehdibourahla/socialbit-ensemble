@@ -168,13 +168,13 @@ class MasterModel(nn.Module):
     def get_positive_example(self, representations, sources, domains, labels, i):
         anchor_domain = domains[i].item()
         anchor_label = labels[i].item()
-        anchor_source = sources[i].item()
+        anchor_source = sources[i]
 
         positive_indices = [
             idx
             for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
             if (
-                source.item() != anchor_source
+                source != anchor_source
                 and (domain.item() == anchor_domain or label.item() == anchor_label)
             )
             and idx != i
@@ -193,13 +193,13 @@ class MasterModel(nn.Module):
         """
         anchor_domain = domains[i].item()
         anchor_label = labels[i].item()
-        anchor_source = sources[i].item()
+        anchor_source = sources[i]
 
         negative_indices = [
             idx
             for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
             if (
-                source.item() != anchor_source
+                source != anchor_source
                 and (domain.item() != anchor_domain and label.item() != anchor_label)
             )
         ]
