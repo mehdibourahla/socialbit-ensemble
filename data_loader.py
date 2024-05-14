@@ -67,7 +67,7 @@ class YAMNetFeaturesDatasetDavid(Dataset):
         # Retrieve the label and domain directly from the DataFrame
         label = self.dataframe.iloc[idx]["is_social"]
         domain = self.dataframe.iloc[idx]["dataset"]
-        source = self.dataframe.iloc[idx]["source"]
+        source = None
 
         try:
             # Load the feature data from the file
