@@ -30,7 +30,6 @@ class ExpertModel(nn.Module):
         )
 
         self.dropout = nn.Dropout(dropout_rate)
-        self.avg_pool = nn.AdaptiveAvgPool1d(1)
 
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)
@@ -46,7 +45,8 @@ class ExpertModel(nn.Module):
 
         x = x.transpose(1, 2)
         lstm_out, _ = self.lstm(x, (h0, c0))
-        lstm_out = self.avg_pool(lstm_out.permute(0, 2, 1)).squeeze(-1)
+
+        lstm_out = lstm_out[:, -1, :]
         out = self.dropout(lstm_out)
         out = self.fc(out)
         out = self.sigmoid(out)
