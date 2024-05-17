@@ -88,12 +88,11 @@ class YAMNetFeaturesDatasetDavid(Dataset):
             )  # Or use an empty tensor
 
         # Convert label and domain to tensors
-        label_tensor = torch.tensor(label, dtype=torch.float32)
+        label_tensor = torch.tensor([label])
         domain_tensor = torch.tensor(domain, dtype=torch.int)
+        label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        # label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
-
-        return self.filenames[idx], source, data_tensor, label_tensor, domain_tensor
+        return self.filenames[idx], source, data_tensor, label_one_hot, domain_tensor
 
 
 class YAMNetFeaturesDatasetEAR(Dataset):
@@ -137,9 +136,8 @@ class YAMNetFeaturesDatasetEAR(Dataset):
             )  # Or use an empty tensor
 
         # Convert label and domain to tensors
-        label_tensor = torch.tensor(label, dtype=torch.float32)
+        label_tensor = torch.tensor([label])
         domain_tensor = torch.tensor(domain, dtype=torch.int)
+        label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
 
-        # label_one_hot = one_hot(label_tensor, num_classes=2).squeeze()
-
-        return fpath, source, data_tensor, label_tensor, domain_tensor
+        return fpath, source, data_tensor, label_one_hot, domain_tensor

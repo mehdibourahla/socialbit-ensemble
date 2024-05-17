@@ -12,7 +12,7 @@ class ExpertModel(nn.Module):
         input_size=1024,
         hidden_size=150,
         num_layers=2,
-        num_classes=1,
+        num_classes=2,
         dropout_rate=0.25,
     ):
         super(ExpertModel, self).__init__()
@@ -33,7 +33,7 @@ class ExpertModel(nn.Module):
 
         # Fully connected layer
         self.fc = nn.Linear(hidden_size * 2, num_classes)
-        self.sigmoid = nn.Sigmoid()
+        self.softmax = nn.Softmax()
 
     def forward(self, x):
         h0 = torch.zeros(
@@ -49,7 +49,7 @@ class ExpertModel(nn.Module):
         lstm_out = lstm_out[:, -1, :]
         out = self.dropout(lstm_out)
         out = self.fc(out)
-        out = self.sigmoid(out)
+        out = self.softmax(out)
         out = out.squeeze()
         return out, lstm_out
 
@@ -81,6 +81,7 @@ class MasterModel(nn.Module):
         expert_outputs = torch.zeros(
             shared_features.size(0),
             self.num_experts,
+            self.num_classes,
             device=shared_features.device,
         )
         expert_representations = torch.zeros(
@@ -138,11 +139,11 @@ class MasterModel(nn.Module):
     def forward_train(self, x, expert_idx):
         # shared_features = self.shared_extractor(x)
         expert_outputs, expert_representations = self.process_experts(x)
-        output = torch.zeros(x.size(0), device=x.device)
+        output = torch.zeros(x.size(0), self.num_classes, device=x.device)
         representation = torch.zeros(
             x.size(0), self.representation_size, device=x.device
         )
-        newbie_output = torch.zeros(x.size(0), device=x.device)
+        newbie_output = torch.zeros(x.size(0), self.num_classes, device=x.device)
 
         # Get the expert output
         for i in range(x.size(0)):
@@ -257,7 +258,9 @@ class MasterModel(nn.Module):
             # Get the inputs and labels and get batch weights
             _, source_x, inputs_x, labels_x, domains_x = batch_x
             inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
-            batch_weight = self.class_weights_tensor[labels_x.long()].to(device)
+            label_decoded = torch.argmax(labels_x, dim=1)
+
+            batch_weight = self.class_weights_tensor[label_decoded].to(device)
 
             optimizer.zero_grad()
             outputs, newbie, representations, all_representations = self.forward_train(
@@ -265,7 +268,7 @@ class MasterModel(nn.Module):
             )
 
             # Separate positive and negative embeddings for clustering
-            pos_labels = labels_x > 0.5
+            pos_labels = label_decoded == 1
             neg_labels = ~pos_labels
             # Update signature sums and counts
             for idx in range(self.num_experts):
@@ -291,13 +294,13 @@ class MasterModel(nn.Module):
             # Apply the batch weights to combined losses
             triplet_loss = (
                 self.contrastive_loss(
-                    all_representations, source_x, domains_x, labels_x
+                    all_representations, source_x, domains_x, label_decoded
                 )
                 if self.gamma > 0
                 else 0
             )
             loss_cr = ((newbie - outputs) ** 2).sum() if self.beta > 0 else 0
-            bce_loss = nn.BCELoss(reduction="none")(outputs, labels_x)
+            bce_loss = nn.CrossEntropyLoss(reduction="none")(outputs, labels_x.float())
 
             loss = (
                 self.alpha * bce_loss + self.beta * loss_cr + self.gamma * triplet_loss
@@ -308,7 +311,8 @@ class MasterModel(nn.Module):
             optimizer.step()
 
             train_loss += loss.item()
-            preds = torch.round(outputs).float()
+            preds = torch.argmax(outputs, dim=1)
+            labels_x = torch.argmax(labels_x, dim=1)
             correct += (preds == labels_x).float().sum().item()
             total += labels_x.numel()
         train_accuracy = correct / total
@@ -349,9 +353,11 @@ class MasterModel(nn.Module):
         with torch.no_grad():
             for _, (_, _, inputs_x, labels_x, _) in enumerate(data_loader):
                 inputs_x, labels_x = inputs_x.to(device), labels_x.to(device)
+
                 expert_outputs = torch.zeros(
                     inputs_x.size(0),
                     self.num_experts,
+                    self.num_classes,
                     device=device,
                     requires_grad=False,
                 )
@@ -375,22 +381,25 @@ class MasterModel(nn.Module):
                 )
 
                 weighted_similarities = F.softmax(signature_similarities, dim=1)
-                chosen_outputs = torch.zeros(inputs_x.size(0), device=device)
+                chosen_outputs = torch.zeros(
+                    inputs_x.size(0), self.num_classes, device=device
+                )
 
                 for idx in range(self.num_experts):
                     chosen_outputs += (
-                        weighted_similarities[:, idx] * expert_outputs[:, idx]
+                        weighted_similarities[:, idx].unsqueeze(1)
+                        * expert_outputs[:, idx]
                     )
-                bce_loss = nn.BCELoss()(chosen_outputs, labels_x)
+                bce_loss = nn.CrossEntropyLoss()(chosen_outputs, labels_x.float())
                 loss += bce_loss
 
-                preds = torch.round(chosen_outputs).float()
-
+                preds = torch.argmax(chosen_outputs, dim=1)
+                labels_x = torch.argmax(labels_x, dim=1)
                 # Compute confusion matrix components
-                TP += ((preds == 1) & (labels_x == 1)).float().sum().item()
-                TN += ((preds == 0) & (labels_x == 0)).float().sum().item()
-                FP += ((preds == 1) & (labels_x == 0)).float().sum().item()
-                FN += ((preds == 0) & (labels_x == 1)).float().sum().item()
+                TP += ((preds == 1) & (labels_x == 1)).sum().item()
+                TN += ((preds == 0) & (labels_x == 0)).sum().item()
+                FP += ((preds == 1) & (labels_x == 0)).sum().item()
+                FN += ((preds == 0) & (labels_x == 1)).sum().item()
 
                 correct += (preds == labels_x).float().sum().item()
                 total += labels_x.numel()
