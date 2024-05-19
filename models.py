@@ -223,13 +223,13 @@ class MasterModel(nn.Module):
                 representations, sources, domains, labels, i
             )
 
-            pos_sim = F.cosine_similarity(anchor, positive)
+            pos_sim = F.cosine_similarity(anchor, positive, dim=1)
             pos_dist = 1 - pos_sim  # 0 if postive is the anchor
 
-            neg_sim = F.cosine_similarity(anchor, negative)
+            neg_sim = F.cosine_similarity(anchor, negative, dim=1)
             neg_dist = 1 - neg_sim
             # Triplet loss calculation with cosine distance
-            triplet_loss = F.relu(abs(pos_dist - neg_dist) + margin)
+            triplet_loss = F.relu(pos_dist - neg_dist + margin)
             loss[i] = triplet_loss.mean()
 
         return loss
