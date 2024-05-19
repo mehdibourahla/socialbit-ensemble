@@ -175,8 +175,9 @@ class MasterModel(nn.Module):
             idx
             for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
             if (
-                source != anchor_source
-                and (domain.item() == anchor_domain or label.item() == anchor_label)
+                source == anchor_source
+                and domain.item() == anchor_domain
+                and label.item() == anchor_label
             )
             and idx != i
         ]
@@ -201,7 +202,8 @@ class MasterModel(nn.Module):
             for idx, (domain, label, source) in enumerate(zip(domains, labels, sources))
             if (
                 source != anchor_source
-                and (domain.item() != anchor_domain and label.item() != anchor_label)
+                or domain.item() != anchor_domain
+                or label.item() != anchor_label
             )
         ]
 
