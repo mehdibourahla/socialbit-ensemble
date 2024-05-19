@@ -428,9 +428,10 @@ class MasterModel(nn.Module):
         device,
         output_dir,
         num_epochs=100,
+        learning_rate=1e-5,
         early_stopping_patience=10,
     ):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
         early_stopping = EarlyStopping(
             patience=early_stopping_patience,
             delta=0.001,
